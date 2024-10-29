@@ -1,5 +1,6 @@
 mod api;
 mod model;
+mod whitebox;
 
 use api::{Api, CustomerSubmission, InputData};
 use itertools::Itertools;
@@ -34,20 +35,23 @@ fn main() {
 }
 
 async fn run(api: &Api, indata: &InputData) {
-    let rates = linspace(0.0, 6.0, 121);
+    //let rates = linspace(0.0, 6.0, 121);
+    let rates = linspace(0.0, 6.0, 3);
     let awards = iter::once(None).chain(indata.awards.keys().map(|&x| Some(x)));
 
     let parameters = rates.cartesian_product(awards);
 
     let results = futures::future::join_all(parameters.map(|(rate, award)| async move {
         let submission = parameterized_submission(indata, rate, award);
-        (rate, award, api.evaluate(&indata, &submission).await)
+        let score = api.evaluate(&indata, &submission).await;
+        let whitebox_score = whitebox::simulate(&indata, &submission);
+        (rate, award, score, whitebox_score)
     }))
     .await;
 
     println!();
     let mut best_tot_score = 0.0;
-    for (rate, award, score) in results {
+    for (rate, award, score, whitebox_score) in results {
         let record = if score.total_score >= best_tot_score {
             best_tot_score = score.total_score;
             " <=============== RECORD!"
@@ -55,6 +59,12 @@ async fn run(api: &Api, indata: &InputData) {
             ""
         };
         println!("{score} @ rate={rate:.3} award={award:?}{record}");
+        if score.environmental_impact != whitebox_score.environmental_impact
+            || score.happiness_score != whitebox_score.happiness_score
+            || (score.total_score - whitebox_score.total_score).abs() > 1e-5
+        {
+            eprintln!("mismatch\n    real={score:?}\nwhitebox={whitebox_score:?}\n");
+        }
     }
 }
 
@@ -82,7 +92,7 @@ fn parameterized_submission(
                         None => {
                             tracing::warn!(?customer.personality, "Unknown");
                             rate
-                        },
+                        }
                     },
                     awards: (0..(indata.map.game_length_in_months))
                         .map(|_| award)

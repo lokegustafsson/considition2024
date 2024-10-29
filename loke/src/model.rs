@@ -95,7 +95,7 @@ pub struct Response {
     pub message: (),
     pub score: Score,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Score {
