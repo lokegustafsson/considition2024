@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{cell::Cell, collections::BTreeMap, fs, time::Duration};
-use tokio::time::Instant;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,7 +32,6 @@ pub struct Loan {
     pub environmental_impact: f64,
     pub amount: f64,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -50,7 +48,6 @@ pub struct Award {
     pub cost: f64,
     pub base_happiness: f64,
 }
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "PascalCase")]
 #[serde(deny_unknown_fields)]
@@ -75,11 +72,6 @@ pub struct Request {
     pub proposals: Vec<Proposal>,
     pub iterations: Vec<BTreeMap<String, Action>>,
 }
-impl Request {
-    fn validate(&self) {
-        todo!()
-    }
-}
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
@@ -93,10 +85,13 @@ pub struct Response {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Score {
+    pub map_name: String,
+
     pub environmental_impact: f64,
     #[serde(rename = "happynessScore")]
     pub happiness_score: f64,
-    pub map_name: String,
     pub total_profit: f64,
+
+    /// Sum of the 3 sub-scores
     pub total_score: f64,
 }

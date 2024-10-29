@@ -1,6 +1,6 @@
 mod model;
 
-use model::{Map, Proposal, Request, Response, Action};
+use model::{Action, Map, Proposal, Request, Response};
 use std::{cell::Cell, fs, time::Duration};
 use tokio::time::Instant;
 
@@ -41,6 +41,12 @@ fn main() {
     });
 }
 
+impl Request {
+    fn validate(&self) {
+        todo!()
+    }
+}
+
 struct Api {
     api_key: &'static str,
     earliest_next_call: Cell<Instant>,
@@ -75,6 +81,7 @@ impl Api {
             .await
             .unwrap();
         dbg!(&resp);
-        dbg!(resp.json::<Response>().await.unwrap());
+        let resp_body = resp.json::<Response>().await.unwrap();
+        dbg!(&resp_body);
     }
 }
