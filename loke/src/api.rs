@@ -72,7 +72,7 @@ impl Request {
                         .map(|(customer_name, sub)| {
                             (
                                 *customer_name,
-                                match sub.awards[i] {
+                                match sub.awards.get(i).copied().flatten() {
                                     None => Action {
                                         type_: "Skip",
                                         award: "None",

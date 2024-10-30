@@ -4,10 +4,41 @@ pub fn simulate(
     indata: &InputData,
     submission: &[(&'static str, CustomerSubmission)],
 ) -> crate::model::Score {
-    assert_eq!(indata.map.customers.len(), submission.len());
-    for (_customer_name, sub) in submission {
-        assert_eq!(indata.map.game_length_in_months, sub.awards.len());
-    }
+    assert!(
+        submission.len() > 0,
+        "You must choose at least one customer to play!"
+    );
+
+    assert!(
+        submission
+            .iter()
+            .all(|(_, s)| s.awards.len() <= indata.map.game_length_in_months),
+        "You can not exceed amount of months in 'iterations' then described in map config"
+    );
+
+    assert!(
+        submission
+            .iter()
+            .all(|(_, s)| s.awards.len() == indata.map.game_length_in_months),
+        "You must provide customer actions for each month of the designated game length!"
+    );
+
+    // NOTE: Yes, zero is legal
+    assert!(
+        submission.iter().all(|(_, s)| {
+            #[allow(unused_comparisons)]
+            let ret = s.months_to_pay_back_loan >= 0;
+            ret
+        }),
+        "Customers need at least one month to pay back loan"
+    );
+
+    assert!(
+        submission
+            .iter()
+            .all(|(n, _)| indata.map.customers.iter().any(|c| c.name == *n)),
+        "All requested customers must exist on the chosen map!"
+    );
 
     let accepted_customers: Vec<_> = submission
         .iter()
@@ -41,7 +72,11 @@ pub fn simulate(
         total_score: 0.0,
     };
     // TODO: transposed order?? not read?
-    let mut _budget = 0.0;
+    let mut _budget = indata.map.budget
+        - accepted_customers
+            .iter()
+            .map(|(c, __)| c.loan.amount)
+            .sum::<f64>();
 
     for (customer, customer_submission) in accepted_customers {
         let mut customer_capital = customer.capital;
@@ -52,14 +87,15 @@ pub fn simulate(
         let mut _is_bankrupt = false; // NOTE: Never read
 
         let personality = &indata.personalities[&customer.personality];
-        for i in 0..indata.map.game_length_in_months {
+        for i in 0..customer_submission.months_to_pay_back_loan {
             // Payday
             customer_capital += customer.income;
 
             // PayBills
             let cost_of_monthly_expense =
                 customer.monthly_expenses * personality.living_standard_multiplier;
-            let cost_of_student_loan = if customer.has_student_loan && (i % 3 == 0) {
+            const BUG_STUDENT_LOAN_ALWAYS_FALSE: bool = false;
+            let cost_of_student_loan = if customer.has_student_loan && (i % 3 == 0) && BUG_STUDENT_LOAN_ALWAYS_FALSE {
                 2000.0
             } else {
                 0.0
@@ -81,10 +117,12 @@ pub fn simulate(
                 customer_capital -= monthly_payment;
                 let interest_payment =
                     customer_remaining_balance * customer_submission.yearly_interest_rate / 12.0;
-                let principal_payment = monthly_payment - interest_payment;
-                // NOTE: SIGN ERROR
-                customer_remaining_balance = (customer_remaining_balance + principal_payment)
-                    .clamp(0.0, customer_remaining_balance);
+                let _principal_payment = monthly_payment - interest_payment;
+
+                // NOTE: DEAD CODE DUE TO SIGN ERROR IN JUDGE CODE
+                //customer_remaining_balance = (customer_remaining_balance + principal_payment)
+                //    .clamp(0.0, customer_remaining_balance);
+
                 _successful_payment_streak += 1;
                 // NOTE: This is an error, profit should use old interest payment.
                 let new_interest_payment =
@@ -110,6 +148,7 @@ pub fn simulate(
                     cost,
                     base_happiness,
                 } = &indata.awards[award];
+                customer_happiness += base_happiness * personality.happiness_multiplier;
                 _budget -= match award {
                     "NoInterestRate" => {
                         assert_eq!(*base_happiness, 500.0);
@@ -117,32 +156,29 @@ pub fn simulate(
                     }
                     "HalfInterestRate" => {
                         assert_eq!(*base_happiness, 150.0);
-                        customer_happiness += base_happiness * personality.happiness_multiplier;
                         customer_remaining_balance * customer_submission.yearly_interest_rate / 24.0
                     }
-                    _ => {
-                        customer_happiness += base_happiness * personality.happiness_multiplier;
-                        *cost
-                    }
+                    _ => *cost,
                 }
             }
         }
         ret.happiness_score += customer_happiness;
     }
+
     ret.total_score = ret.environmental_impact + ret.happiness_score + ret.total_profit;
     ret
 }
 fn compute_total_monthly_payment(yearly_rate: f64, months_to_pay_back: usize, amount: f64) -> f64 {
     let months_to_pay_back = months_to_pay_back as i32;
     let mut monthly_rate = yearly_rate / 12.0;
-    if monthly_rate == 0.0 {
+    if monthly_rate < 1e-5 {
         monthly_rate = 0.0001;
     }
-    let num2 = 1.0 + monthly_rate;
-    let num3 = monthly_rate * num2.powi(months_to_pay_back);
-    let mut num4 = num2.powi(months_to_pay_back) - 1.0;
-    if num4 == 0.0 {
-        num4 = 0.0001;
+    let interest_rate = 1.0 + monthly_rate;
+    let upper = monthly_rate * interest_rate.powi(months_to_pay_back);
+    let mut lower = interest_rate.powi(months_to_pay_back) - 1.0;
+    if lower < 1e-5 {
+        lower = 0.0001;
     }
-    amount * (num3 / num4)
+    amount * (upper / lower)
 }

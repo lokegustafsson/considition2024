@@ -35,8 +35,7 @@ fn main() {
 }
 
 async fn run(api: &Api, indata: &InputData) {
-    //let rates = linspace(0.0, 6.0, 121);
-    let rates = linspace(0.0, 6.0, 3);
+    let rates = linspace(0.0, 6.0, 121);
     let awards = iter::once(None).chain(indata.awards.keys().map(|&x| Some(x)));
 
     let parameters = rates.cartesian_product(awards);
