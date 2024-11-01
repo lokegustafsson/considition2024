@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+argmin = { version = "0.10", features = ["rayon"] }
+argmin-math = "0.4"
+argmin-observer-slog = "0.1"
 futures = "0.3"
 itertools = "0.13"
 rayon = "1"

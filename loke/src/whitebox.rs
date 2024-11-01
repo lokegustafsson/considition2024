@@ -6,6 +6,7 @@ pub fn simulate_simplified_kernel(
     living_standard_multiplier: f64,
     yearly_interest_rate: f64,
     months_to_pay_back_loan: usize,
+    months_game: usize,
 ) -> f64 {
     let mut customer_capital = customer.capital;
     let mut customer_marks = 0;
@@ -18,7 +19,7 @@ pub fn simulate_simplified_kernel(
     let interest_payment = customer.loan.amount * yearly_interest_rate / 12.0;
 
     let mut equivalent_score = 0.0;
-    for _ in 0..months_to_pay_back_loan {
+    for _ in 0..months_game.min(months_to_pay_back_loan) {
         customer_capital +=
             customer.income - customer.monthly_expenses * living_standard_multiplier;
 
@@ -102,19 +103,21 @@ pub fn simulate_simplified(
         let interest_payment =
             customer.loan.amount * customer_submission.yearly_interest_rate / 12.0;
 
-        for i in 0..customer_submission.months_to_pay_back_loan {
-            customer_capital += customer.income
-                - customer.monthly_expenses * personality.living_standard_multiplier;
+        for i in 0..indata.map.game_length_in_months {
+            if i < customer_submission.months_to_pay_back_loan {
+                customer_capital += customer.income
+                    - customer.monthly_expenses * personality.living_standard_multiplier;
 
-            if customer_capital >= monthly_payment {
-                customer_capital -= monthly_payment;
-                ret.total_profit += interest_payment;
-            } else {
-                customer_marks += 1;
-                if customer_marks >= 3 {
-                    ret.happiness_score -= 500.0;
+                if customer_capital >= monthly_payment {
+                    customer_capital -= monthly_payment;
+                    ret.total_profit += interest_payment;
                 } else {
-                    ret.happiness_score -= 50.0;
+                    customer_marks += 1;
+                    if customer_marks >= 3 {
+                        ret.happiness_score -= 500.0;
+                    } else {
+                        ret.happiness_score -= 50.0;
+                    }
                 }
             }
 
@@ -216,7 +219,7 @@ pub fn simulate(
         let mut _is_bankrupt = false; // NOTE: Never read
 
         let personality = &indata.personalities[&customer.personality];
-        for i in 0..customer_submission.months_to_pay_back_loan {
+        for i in 0..indata.map.game_length_in_months {
             // Payday
             customer_capital += customer.income;
 
@@ -237,38 +240,42 @@ pub fn simulate(
                 cost_of_monthly_expense - cost_of_student_loan - cost_of_kids - cost_of_mortgage;
 
             // CanPayLoan
-            let monthly_payment = compute_total_monthly_payment(
-                customer_submission.yearly_interest_rate,
-                customer_submission.months_to_pay_back_loan,
-                customer.loan.amount,
-            );
-            if customer_capital >= monthly_payment {
-                // PayLoan
-                customer_capital -= monthly_payment;
-                let interest_payment =
-                    customer_remaining_balance * customer_submission.yearly_interest_rate / 12.0;
-                let _principal_payment = monthly_payment - interest_payment;
+            if i < customer_submission.months_to_pay_back_loan {
+                let monthly_payment = compute_total_monthly_payment(
+                    customer_submission.yearly_interest_rate,
+                    customer_submission.months_to_pay_back_loan,
+                    customer.loan.amount,
+                );
+                if customer_capital >= monthly_payment {
+                    // PayLoan
+                    customer_capital -= monthly_payment;
+                    let interest_payment = customer_remaining_balance
+                        * customer_submission.yearly_interest_rate
+                        / 12.0;
+                    let _principal_payment = monthly_payment - interest_payment;
 
-                // NOTE: DEAD CODE DUE TO SIGN ERROR IN JUDGE CODE
-                //customer_remaining_balance = (customer_remaining_balance + principal_payment)
-                //    .clamp(0.0, customer_remaining_balance);
+                    // NOTE: DEAD CODE DUE TO SIGN ERROR IN JUDGE CODE
+                    //customer_remaining_balance = (customer_remaining_balance + principal_payment)
+                    //    .clamp(0.0, customer_remaining_balance);
 
-                _successful_payment_streak += 1;
-                // NOTE: This is an error, profit should use old interest payment.
-                let new_interest_payment =
-                    customer_remaining_balance * customer_submission.yearly_interest_rate / 12.0;
-                ret.total_profit += new_interest_payment;
-                _budget += new_interest_payment;
-            } else {
-                // IncrementMark
-                customer_marks += 1;
-                _successful_payment_streak = 0;
-                const MARKS_LIMIT: usize = 3;
-                if customer_marks >= MARKS_LIMIT {
-                    _is_bankrupt = true;
-                    customer_happiness -= 500.0;
+                    _successful_payment_streak += 1;
+                    // NOTE: This is an error, profit should use old interest payment.
+                    let new_interest_payment = customer_remaining_balance
+                        * customer_submission.yearly_interest_rate
+                        / 12.0;
+                    ret.total_profit += new_interest_payment;
+                    _budget += new_interest_payment;
                 } else {
-                    customer_happiness -= 50.0;
+                    // IncrementMark
+                    customer_marks += 1;
+                    _successful_payment_streak = 0;
+                    const MARKS_LIMIT: usize = 3;
+                    if customer_marks >= MARKS_LIMIT {
+                        _is_bankrupt = true;
+                        customer_happiness -= 500.0;
+                    } else {
+                        customer_happiness -= 50.0;
+                    }
                 }
             }
 
@@ -298,7 +305,12 @@ pub fn simulate(
     ret.total_score = ret.environmental_impact + ret.happiness_score + ret.total_profit;
     ret
 }
-fn compute_total_monthly_payment(yearly_rate: f64, months_to_pay_back: usize, amount: f64) -> f64 {
+
+pub fn compute_total_monthly_payment(
+    yearly_rate: f64,
+    months_to_pay_back: usize,
+    amount: f64,
+) -> f64 {
     let months_to_pay_back = months_to_pay_back as f64;
     let mut monthly_rate = yearly_rate / 12.0;
     if monthly_rate < 1e-5 {

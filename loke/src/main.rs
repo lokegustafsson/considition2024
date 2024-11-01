@@ -5,7 +5,7 @@ mod whitebox;
 use api::{Api, CustomerSubmission, InputData};
 use itertools::Itertools;
 use model::Personality;
-use rayon::iter::{ParallelIterator, IntoParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::iter;
 use tokio::time::Instant;
 
@@ -64,7 +64,11 @@ async fn run(api: &Api, indata: &InputData) {
         }))
         .await
     } else {
-        let (award, submission) = locally_optimized_submission(indata);
+        let (award, submission) = if false {
+            locally_optimized_submission(indata)
+        } else {
+            blackbox_locally_optimized_submission(indata)
+        };
         let score = api.evaluate(&indata, &submission).await;
         let whitebox_score = whitebox::simulate(&indata, &submission);
         assert_eq!(
@@ -152,17 +156,20 @@ fn locally_optimized_submission(
             let personality = &indata.personalities[&customer.personality];
             let rates = linspace_par(
                 personality.accepted_min_interest,
-                personality.accepted_max_interest.min(10.0),
+                personality.accepted_max_interest,
                 if customer.name == "Glenn" {
                     1_000_000_000
                 } else {
-                    1_000
+                    10_000_000
                 } + 1,
             );
-            //let months = 0..(indata.map.game_length_in_months + 1);
             let (rate, month, _) = rates
                 .flat_map_iter(|rate| {
-                    let months = iter::once(indata.map.game_length_in_months);
+                    //let months = iter::once(indata.map.game_length_in_months);
+                    //let months = 0..(1000*indata.map.game_length_in_months + 1);
+                    //let months = iter::once(1000 * indata.map.game_length_in_months);
+                    let months = (0..(1000 * indata.map.game_length_in_months + 1))
+                        .step_by(10 * indata.map.game_length_in_months);
                     months.map(move |month| (rate, month))
                 })
                 .map(|(rate, month)| {
@@ -174,17 +181,122 @@ fn locally_optimized_submission(
                             personality.living_standard_multiplier,
                             rate,
                             month,
+                            indata.map.game_length_in_months,
                         ),
                     )
                 })
                 .max_by(|(_, _, score1), (_, _, score2)| score1.partial_cmp(score2).unwrap())
                 .unwrap();
 
-            tracing::info!(customer.name, rate, month);
+            tracing::info!(
+                customer.name,
+                rate,
+                month,
+                monthly_payment =
+                    whitebox::compute_total_monthly_payment(rate, month, customer.loan.amount)
+            );
             (
                 customer.name,
                 CustomerSubmission {
                     months_to_pay_back_loan: month,
+                    yearly_interest_rate: rate,
+                    awards: (0..(indata.map.game_length_in_months))
+                        .map(|_| Some(best_award))
+                        .collect(),
+                },
+            )
+        })
+        .collect();
+
+    (best_award, ret)
+}
+
+fn blackbox_locally_optimized_submission(
+    indata: &InputData,
+) -> (&'static str, Vec<(&'static str, CustomerSubmission)>) {
+    let best_award = indata
+        .awards
+        .iter()
+        .max_by(|(_, v1), (_, v2)| {
+            PartialOrd::partial_cmp(&v1.base_happiness, &v2.base_happiness).unwrap()
+        })
+        .unwrap();
+    assert!(
+        best_award.1.base_happiness >= 0.0,
+        "TODO Implement support for skipping award"
+    );
+    let best_award = *best_award.0;
+
+    #[derive(Debug)]
+    struct BlackboxOpt {
+        customer: model::Customer,
+        personality: Personality,
+        game_length_in_months: usize,
+    }
+    fn param_to_rate_months(p: &Vec<f64>, personality: &Personality) -> (f64, usize) {
+        let rate = p[0].clamp(
+            personality.accepted_min_interest,
+            personality.accepted_max_interest,
+        );
+        let months = p[1].max(0.0) as usize;
+        (rate, months)
+    }
+    impl argmin::core::CostFunction for BlackboxOpt {
+        type Param = Vec<f64>;
+        type Output = f64;
+        fn cost(&self, p: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
+            let (rate, months) = param_to_rate_months(p, &self.personality);
+            Ok(-whitebox::simulate_simplified_kernel(
+                &self.customer,
+                self.personality.living_standard_multiplier,
+                rate,
+                months,
+                self.game_length_in_months,
+            ))
+        }
+    }
+
+    let ret = indata
+        .map
+        .customers
+        .iter()
+        .map(|customer| {
+            let personality = &indata.personalities[&customer.personality];
+            let opt = BlackboxOpt {
+                customer: customer.clone(),
+                personality: personality.clone(),
+                game_length_in_months: indata.map.game_length_in_months,
+            };
+            let solver = argmin::solver::particleswarm::ParticleSwarm::<Vec<f64>, f64, _>::new(
+                (vec![0.0, 0.0], vec![1.0, 1_000_000.0]),
+                10,
+            );
+            let res = argmin::core::Executor::new(opt, solver)
+                .add_observer(
+                    argmin_observer_slog::SlogLogger::term(),
+                    argmin::core::observers::ObserverMode::NewBest,
+                )
+                .configure(|state| state.max_iters(100000))
+                .run()
+                .unwrap();
+            dbg!(res.problem());
+            dbg!(&res.state().best_individual);
+            let (rate, months) = param_to_rate_months(
+                &res.state().best_individual.as_ref().unwrap().position,
+                &personality.clone(),
+            );
+
+            tracing::info!(
+                customer.name,
+                rate,
+                months,
+                monthly_payment =
+                    whitebox::compute_total_monthly_payment(rate, months, customer.loan.amount)
+            );
+            (
+                customer.name,
+                CustomerSubmission {
+                    months_to_pay_back_loan: months,
                     yearly_interest_rate: rate,
                     awards: (0..(indata.map.game_length_in_months))
                         .map(|_| Some(best_award))
