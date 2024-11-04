@@ -145,12 +145,11 @@ impl Api {
                 }
                 _ => {
                     eprint!(".");
-                    break response
-                        .error_for_status()
-                        .unwrap()
-                        .json::<Response>()
-                        .await
-                        .unwrap();
+                    if response.status().is_success() {
+                        break response.json().await.unwrap();
+                    } else {
+                        panic!("{}\n{}\n{:#?}\n", response.status(), response.text().await.unwrap(), request);
+                    }
                 }
             }
         };
