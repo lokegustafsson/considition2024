@@ -1,4 +1,7 @@
-use crate::api::{CustomerSubmission, InputData};
+use crate::{
+    api::{CustomerSubmission, InputData},
+    model::Score,
+};
 
 // Maximizing score is equivalent to maximizing this per customer
 pub fn simulate_simplified_kernel(
@@ -7,129 +10,59 @@ pub fn simulate_simplified_kernel(
     yearly_interest_rate: f64,
     months_to_pay_back_loan: usize,
     months_game: usize,
-) -> f64 {
-    let mut customer_capital = customer.capital;
-    let mut customer_marks = 0;
+) -> (f64, f64) {
+    let mut capital: f64 = customer.capital;
+    let mut remaining_balance = customer.loan.amount;
+    let mut marks = 0;
+    //let mut awards_in_a_row = 0;
 
-    let monthly_payment = compute_total_monthly_payment(
-        yearly_interest_rate,
-        months_to_pay_back_loan,
-        customer.loan.amount,
-    );
-    let interest_payment = customer.loan.amount * yearly_interest_rate / 12.0;
+    let mut budget_shortfall = customer.loan.amount;
+    let mut budget_required = budget_shortfall;
 
-    let mut equivalent_score = 0.0;
-    for _ in 0..months_game.min(months_to_pay_back_loan) {
-        customer_capital +=
-            customer.income - customer.monthly_expenses * living_standard_multiplier;
-
-        if customer_capital >= monthly_payment {
-            customer_capital -= monthly_payment;
-            equivalent_score += interest_payment;
-        } else {
-            customer_marks += 1;
-            if customer_marks >= 3 {
-                equivalent_score -= 500.0;
-            } else {
-                equivalent_score -= 50.0;
-            }
-        }
-    }
-    equivalent_score
-}
-
-pub fn simulate_simplified(
-    indata: &InputData,
-    submission: &[(&'static str, CustomerSubmission)],
-) -> crate::model::Score {
-    assert!(
-        submission.len() > 0,
-        "You must choose at least one customer to play!"
-    );
-    for (_, s) in submission {
-        assert_eq!(s.awards.len(), indata.map.game_length_in_months);
-    }
-
-    let accepted_customers: Vec<_> = submission
-        .iter()
-        .filter_map(|(customer_name, sub)| {
-            let customer = indata
-                .map
-                .customers
-                .iter()
-                .find(|c| c.name == *customer_name)
-                .unwrap();
-            let personality = &indata.personalities[&customer.personality];
-
-            if personality.accepted_min_interest <= sub.yearly_interest_rate
-                && sub.yearly_interest_rate <= personality.accepted_max_interest
-            {
-                Some((customer, sub))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let mut ret = crate::model::Score {
-        map_name: indata.map.name.to_string(),
-        environmental_impact: accepted_customers
-            .iter()
-            .map(|(c, _)| c.loan.environmental_impact)
-            .sum(),
-        happiness_score: 0.0,
-        total_profit: 0.0,
-        total_score: 0.0,
-    };
-    assert!(
-        indata.map.budget
-            >= accepted_customers
-                .iter()
-                .map(|(c, __)| c.loan.amount)
-                .sum::<f64>()
-    );
-
-    for (customer, customer_submission) in accepted_customers {
-        let mut customer_capital = customer.capital;
-        let mut customer_marks = 0;
-
-        let personality = &indata.personalities[&customer.personality];
-
-        let monthly_payment = compute_total_monthly_payment(
-            customer_submission.yearly_interest_rate,
-            customer_submission.months_to_pay_back_loan,
-            customer.loan.amount,
-        );
-        let interest_payment =
-            customer.loan.amount * customer_submission.yearly_interest_rate / 12.0;
-
-        for i in 0..indata.map.game_length_in_months {
-            if i < customer_submission.months_to_pay_back_loan {
-                customer_capital += customer.income
-                    - customer.monthly_expenses * personality.living_standard_multiplier;
-
-                if customer_capital >= monthly_payment {
-                    customer_capital -= monthly_payment;
-                    ret.total_profit += interest_payment;
+    let mut score = customer.loan.environmental_impact;
+    let mut happiness = 0.0;
+    'bankruptcy: for i in 0..months_game {
+        if i < months_to_pay_back_loan {
+            capital += customer.income;
+            let cost_of_monthly_expense = customer.monthly_expenses * living_standard_multiplier;
+            const BUG_STUDENT_LOAN_ALWAYS_FALSE: bool = true;
+            let cost_of_student_loan =
+                if customer.has_student_loan && (i % 3 == 0) && BUG_STUDENT_LOAN_ALWAYS_FALSE {
+                    2000.0
                 } else {
-                    customer_marks += 1;
-                    if customer_marks >= 3 {
-                        ret.happiness_score -= 500.0;
-                    } else {
-                        ret.happiness_score -= 50.0;
-                    }
+                    0.0
+                };
+            let cost_of_kids = customer.number_of_kids * 2000.0;
+            let cost_of_mortgage = customer.home_mortgage * 0.01;
+            // NOTE: This is a sign error in their code
+            capital -=
+                cost_of_monthly_expense - cost_of_student_loan - cost_of_kids - cost_of_mortgage;
+
+            let interest_payment = remaining_balance * yearly_interest_rate / 12.0;
+            let amortization = customer.loan.amount / months_to_pay_back_loan as f64;
+            if interest_payment + amortization <= capital {
+                capital -= interest_payment + amortization;
+                remaining_balance = (remaining_balance - amortization).max(0.0);
+                score += interest_payment;
+                budget_shortfall -= interest_payment;
+            } else {
+                marks += 1;
+                capital = 0.0;
+                if marks >= 3 {
+                    //happiness -= 500.0;
+                    happiness = -500.0;
+                    break 'bankruptcy;
+                } else {
+                    happiness -= 50.0;
                 }
             }
-
-            if let Some(award) = customer_submission.awards[i] {
-                ret.happiness_score +=
-                    indata.awards[award].base_happiness * personality.happiness_multiplier;
-            }
         }
+        // FIXME:
+        //budget_shortfall += 4.0; // Assume buying cheap award
+        budget_required = budget_required.max(budget_shortfall);
     }
-
-    ret.total_score = ret.environmental_impact + ret.happiness_score + ret.total_profit;
-    ret
+    score += happiness;
+    (score, budget_required)
 }
 
 pub fn simulate(
@@ -188,12 +121,15 @@ pub fn simulate(
             {
                 Some((customer, sub))
             } else {
+                eprintln!(
+                    "never printed, because local_opt will never suggest out-of-bounds rates"
+                );
                 None
             }
         })
         .collect();
 
-    let mut ret = crate::model::Score {
+    let mut ret = Score {
         map_name: indata.map.name.to_string(),
         environmental_impact: accepted_customers
             .iter()
@@ -203,30 +139,58 @@ pub fn simulate(
         total_profit: 0.0,
         total_score: 0.0,
     };
-    // TODO: transposed order?? not read?
-    let mut _budget = indata.map.budget
+    let mut budget = indata.map.budget
         - accepted_customers
             .iter()
             .map(|(c, __)| c.loan.amount)
             .sum::<f64>();
 
-    for (customer, customer_submission) in accepted_customers {
-        let mut customer_capital = customer.capital;
-        let customer_remaining_balance = customer.loan.amount;
-        let mut customer_marks = 0;
-        let mut _successful_payment_streak = 0; // NOTE: Never read
-        let mut customer_happiness = 0.0;
-        let mut _is_bankrupt = false; // NOTE: Never read
+    struct CustomerState {
+        capital: f64,
+        remaining_balance: f64,
+        marks: usize,
+        happiness: f64,
+        is_bankrupt: bool,
+        awards_in_a_row: usize,
+    }
+    let mut customer_state: Vec<CustomerState> = accepted_customers
+        .iter()
+        .map(|(customer, _customer_submission)| CustomerState {
+            capital: customer.capital,
+            remaining_balance: customer.loan.amount,
+            marks: 0,
+            happiness: 0.0,
+            is_bankrupt: false,
+            awards_in_a_row: 0,
+        })
+        .collect();
+    for i in 0..indata.map.game_length_in_months {
+        for ((customer, customer_submission), customer_state) in
+            accepted_customers.iter().zip(customer_state.iter_mut())
+        {
+            if budget <= 0.0 {
+                return Score {
+                    map_name: indata.map.name.to_string(),
 
-        let personality = &indata.personalities[&customer.personality];
-        for i in 0..indata.map.game_length_in_months {
+                    environmental_impact: f64::NEG_INFINITY,
+                    happiness_score: f64::NEG_INFINITY,
+                    total_profit: f64::NEG_INFINITY,
+
+                    total_score: f64::NEG_INFINITY,
+                };
+            }
+            if customer_state.is_bankrupt {
+                continue;
+            }
+            let personality = &indata.personalities[&customer.personality];
+
             // Payday
-            customer_capital += customer.income;
+            customer_state.capital += customer.income;
 
             // PayBills
             let cost_of_monthly_expense =
                 customer.monthly_expenses * personality.living_standard_multiplier;
-            const BUG_STUDENT_LOAN_ALWAYS_FALSE: bool = false;
+            const BUG_STUDENT_LOAN_ALWAYS_FALSE: bool = true;
             let cost_of_student_loan =
                 if customer.has_student_loan && (i % 3 == 0) && BUG_STUDENT_LOAN_ALWAYS_FALSE {
                     2000.0
@@ -236,45 +200,35 @@ pub fn simulate(
             let cost_of_kids = customer.number_of_kids * 2000.0;
             let cost_of_mortgage = customer.home_mortgage * 0.01;
             // NOTE: This is a sign error in their code
-            customer_capital -=
+            customer_state.capital -=
                 cost_of_monthly_expense - cost_of_student_loan - cost_of_kids - cost_of_mortgage;
 
             // CanPayLoan
             if i < customer_submission.months_to_pay_back_loan {
-                let monthly_payment = compute_total_monthly_payment(
-                    customer_submission.yearly_interest_rate,
-                    customer_submission.months_to_pay_back_loan,
-                    customer.loan.amount,
-                );
-                if customer_capital >= monthly_payment {
+                let interest_payment = customer_state.remaining_balance
+                    * customer_submission.yearly_interest_rate
+                    / 12.0;
+                let amortization =
+                    customer.loan.amount / customer_submission.months_to_pay_back_loan as f64;
+                if interest_payment + amortization <= customer_state.capital {
                     // PayLoan
-                    customer_capital -= monthly_payment;
-                    let interest_payment = customer_remaining_balance
-                        * customer_submission.yearly_interest_rate
-                        / 12.0;
-                    let _principal_payment = monthly_payment - interest_payment;
-
-                    // NOTE: DEAD CODE DUE TO SIGN ERROR IN JUDGE CODE
-                    //customer_remaining_balance = (customer_remaining_balance + principal_payment)
-                    //    .clamp(0.0, customer_remaining_balance);
-
-                    _successful_payment_streak += 1;
-                    // NOTE: This is an error, profit should use old interest payment.
-                    let new_interest_payment = customer_remaining_balance
-                        * customer_submission.yearly_interest_rate
-                        / 12.0;
-                    ret.total_profit += new_interest_payment;
-                    _budget += new_interest_payment;
+                    customer_state.capital -= interest_payment + amortization;
+                    let profit = interest_payment;
+                    customer_state.remaining_balance =
+                        (customer_state.remaining_balance - amortization).max(0.0);
+                    ret.total_profit += profit;
+                    budget += profit; // NOTE: their bug
                 } else {
                     // IncrementMark
-                    customer_marks += 1;
-                    _successful_payment_streak = 0;
+                    customer_state.marks += 1;
+                    customer_state.capital = 0.0;
                     const MARKS_LIMIT: usize = 3;
-                    if customer_marks >= MARKS_LIMIT {
-                        _is_bankrupt = true;
-                        customer_happiness -= 500.0;
+                    if customer_state.marks >= MARKS_LIMIT {
+                        customer_state.is_bankrupt = true;
+                        //customer_state.happiness -= 500.0;
+                        customer_state.happiness = -500.0;
                     } else {
-                        customer_happiness -= 50.0;
+                        customer_state.happiness -= 50.0;
                     }
                 }
             }
@@ -285,42 +239,35 @@ pub fn simulate(
                     cost,
                     base_happiness,
                 } = &indata.awards[award];
-                customer_happiness += base_happiness * personality.happiness_multiplier;
-                _budget -= match award {
-                    "NoInterestRate" => {
-                        assert_eq!(*base_happiness, 500.0);
-                        customer_remaining_balance * customer_submission.yearly_interest_rate / 12.0
-                    }
-                    "HalfInterestRate" => {
-                        assert_eq!(*base_happiness, 150.0);
-                        customer_remaining_balance * customer_submission.yearly_interest_rate / 24.0
-                    }
-                    _ => *cost,
-                }
+                let happiness_multiplier = 1.0 - 0.2 * (customer_state.awards_in_a_row as f64);
+                customer_state.happiness +=
+                    base_happiness * personality.happiness_multiplier * happiness_multiplier;
+                customer_state.awards_in_a_row = (customer_state.awards_in_a_row + 1).min(5);
+                let cost = *cost
+                    + match award {
+                        "NoInterestRate" => {
+                            customer_state.remaining_balance
+                                * customer_submission.yearly_interest_rate
+                                / 12.0
+                        }
+                        "HalfInterestRate" => {
+                            customer_state.remaining_balance
+                                * customer_submission.yearly_interest_rate
+                                / 24.0
+                        }
+                        _ => 0.0,
+                    };
+                ret.total_profit -= cost;
+                budget -= cost;
+            } else {
+                customer_state.awards_in_a_row = customer_state.awards_in_a_row.saturating_sub(1);
             }
         }
-        ret.happiness_score += customer_happiness;
+    }
+    for customer_state in customer_state {
+        ret.happiness_score += customer_state.happiness;
     }
 
-    ret.total_score = ret.environmental_impact + ret.happiness_score + ret.total_profit;
+    ret.total_score = (ret.environmental_impact + ret.happiness_score + ret.total_profit).trunc();
     ret
-}
-
-pub fn compute_total_monthly_payment(
-    yearly_rate: f64,
-    months_to_pay_back: usize,
-    amount: f64,
-) -> f64 {
-    let months_to_pay_back = months_to_pay_back as f64;
-    let mut monthly_rate = yearly_rate / 12.0;
-    if monthly_rate < 1e-5 {
-        monthly_rate = 0.0001;
-    }
-    let interest_rate = 1.0 + monthly_rate;
-    let upper = monthly_rate * interest_rate.powf(months_to_pay_back);
-    let mut lower = interest_rate.powf(months_to_pay_back) - 1.0;
-    if lower < 1e-5 {
-        lower = 0.0001;
-    }
-    amount * (upper / lower)
 }

@@ -23,7 +23,9 @@ pub struct Customer {
     pub income: f64,
     pub monthly_expenses: f64,
     pub number_of_kids: f64,
+    #[serde(alias = "mortgage")]
     pub home_mortgage: f64,
+    #[serde(alias = "hasStudentLoans")]
     pub has_student_loan: bool,
 }
 #[derive(Debug, Clone, Deserialize)]
@@ -102,7 +104,6 @@ pub struct Score {
     pub map_name: String,
 
     pub environmental_impact: f64,
-    #[serde(rename = "happynessScore")]
     pub happiness_score: f64,
     pub total_profit: f64,
 

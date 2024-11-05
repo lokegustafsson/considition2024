@@ -3,12 +3,14 @@ use reqwest::StatusCode;
 use std::{cell::Cell, collections::BTreeMap, fmt, fs, time::Duration};
 use tokio::time::Instant;
 
+#[derive(Clone, Debug)]
 pub struct CustomerSubmission {
     pub months_to_pay_back_loan: usize,
     pub yearly_interest_rate: f64,
     pub awards: Box<[Option<&'static str>]>,
 }
 
+#[derive(Clone, Debug)]
 pub struct InputData {
     pub awards: BTreeMap<&'static str, Award>,
     pub personalities: BTreeMap<String, Personality>,
@@ -17,15 +19,16 @@ pub struct InputData {
 
 impl InputData {
     pub fn load(map_name: &str) -> Self {
-        let awards: &'static str = fs::read_to_string(format!("data/Awards.json"))
+        let awards: &'static str = fs::read_to_string(format!("data/Awards-{map_name}.json"))
             .unwrap()
             .leak();
         let map: &'static str = fs::read_to_string(format!("data/Map-{map_name}.json"))
             .unwrap()
             .leak();
-        let personalities: &'static str = fs::read_to_string(format!("data/personalities.json"))
-            .unwrap()
-            .leak();
+        let personalities: &'static str =
+            fs::read_to_string(format!("data/Personalities-{map_name}.json"))
+                .unwrap()
+                .leak();
         Self {
             awards: serde_json::from_str::<model::Awards>(awards)
                 .unwrap()
@@ -148,7 +151,12 @@ impl Api {
                     if response.status().is_success() {
                         break response.json().await.unwrap();
                     } else {
-                        panic!("{}\n{}\n{:#?}\n", response.status(), response.text().await.unwrap(), request);
+                        panic!(
+                            "{}\n{}\n{:#?}\n",
+                            response.status(),
+                            response.text().await.unwrap(),
+                            request
+                        );
                     }
                 }
             }

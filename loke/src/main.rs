@@ -24,7 +24,8 @@ fn main() {
     )
     .expect("enabling global logger");
 
-    let indata = InputData::load("Gothenburg");
+    //let indata = InputData::load("Gothenburg");
+    let indata = InputData::load("Nottingham");
 
     let api = Api::new();
 
@@ -40,14 +41,12 @@ async fn run(api: &Api, indata: &InputData) {
     let results = match WHICH {
         "sweep" => sweep(api, indata).await,
         "localopt" => {
-            let (award, submission) = opt::blackbox_locally_optimized_submission(indata);
+            let (expected_score, award, submission) =
+                opt::blackbox_locally_optimized_submission(indata);
             let score = api.evaluate(&indata, &submission).await;
             let whitebox_score = whitebox::simulate(&indata, &submission);
-            assert_eq!(
-                whitebox_score,
-                whitebox::simulate_simplified(&indata, &submission)
-            );
-            vec![(0.0, Some(award), score, whitebox_score)]
+            dbg!(&expected_score, &whitebox_score, &score);
+            vec![(0.0, award, score, whitebox_score)]
         }
         "remoteopt" => {
             todo!()
@@ -75,7 +74,7 @@ async fn run(api: &Api, indata: &InputData) {
 }
 
 async fn sweep(api: &Api, indata: &InputData) -> Vec<(f64, Option<&'static str>, Score, Score)> {
-    let rates = linspace(0.0, 6.0, 121);
+    let rates = linspace(0.0, 6.0, 13);
     let awards = iter::once(None).chain(indata.awards.keys().copied().map(Some));
     /*
     let awards = iter::once(Some(
@@ -95,10 +94,6 @@ async fn sweep(api: &Api, indata: &InputData) -> Vec<(f64, Option<&'static str>,
         let submission = parameterized(indata, rate, award);
         let score = api.evaluate(&indata, &submission).await;
         let whitebox_score = whitebox::simulate(&indata, &submission);
-        assert_eq!(
-            whitebox_score,
-            whitebox::simulate_simplified(&indata, &submission)
-        );
         (rate, award, score, whitebox_score)
     }))
     .await;
@@ -112,6 +107,7 @@ async fn sweep(api: &Api, indata: &InputData) -> Vec<(f64, Option<&'static str>,
             .map
             .customers
             .iter()
+            .filter(|customer| customer.name == "Nona Lang")
             .map(|customer| {
                 let personality = indata.personalities.get(&customer.personality);
                 (
