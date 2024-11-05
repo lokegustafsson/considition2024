@@ -1,20 +1,23 @@
 use crate::{
     api::{CustomerSubmission, InputData},
-    model::Score,
+    model::{Award, Personality, Score},
 };
 
 // Maximizing score is equivalent to maximizing this per customer
 pub fn simulate_simplified_kernel(
     customer: &crate::model::Customer,
-    living_standard_multiplier: f64,
+    personality: &Personality,
     yearly_interest_rate: f64,
     months_to_pay_back_loan: usize,
     months_game: usize,
+    awards_with_rebates: &[Option<(Award, f64)>],
 ) -> (f64, f64) {
+    assert_eq!(awards_with_rebates.len(), months_game);
+    assert!(months_to_pay_back_loan <= 4 * months_game);
     let mut capital: f64 = customer.capital;
     let mut remaining_balance = customer.loan.amount;
     let mut marks = 0;
-    //let mut awards_in_a_row = 0;
+    let mut awards_in_a_row: i32 = 0;
 
     let mut budget_shortfall = customer.loan.amount;
     let mut budget_required = budget_shortfall;
@@ -24,22 +27,20 @@ pub fn simulate_simplified_kernel(
     'bankruptcy: for i in 0..months_game {
         if i < months_to_pay_back_loan {
             capital += customer.income;
-            let cost_of_monthly_expense = customer.monthly_expenses * living_standard_multiplier;
-            const BUG_STUDENT_LOAN_ALWAYS_FALSE: bool = true;
-            let cost_of_student_loan =
-                if customer.has_student_loan && (i % 3 == 0) && BUG_STUDENT_LOAN_ALWAYS_FALSE {
-                    2000.0
-                } else {
-                    0.0
-                };
+            let cost_of_monthly_expense =
+                customer.monthly_expenses * personality.living_standard_multiplier;
+            let cost_of_student_loan = if customer.has_student_loan && (i % 3 == 0) {
+                2000.0
+            } else {
+                0.0
+            };
             let cost_of_kids = customer.number_of_kids * 2000.0;
-            let cost_of_mortgage = customer.home_mortgage * 0.01;
-            // NOTE: This is a sign error in their code
+            let cost_of_mortgage = customer.home_mortgage * 0.001;
             capital -=
-                cost_of_monthly_expense - cost_of_student_loan - cost_of_kids - cost_of_mortgage;
+                cost_of_monthly_expense + cost_of_student_loan + cost_of_kids + cost_of_mortgage;
 
-            let interest_payment = remaining_balance * yearly_interest_rate / 12.0;
             let amortization = customer.loan.amount / months_to_pay_back_loan as f64;
+            let interest_payment = remaining_balance * yearly_interest_rate / 12.0;
             if interest_payment + amortization <= capital {
                 capital -= interest_payment + amortization;
                 remaining_balance = (remaining_balance - amortization).max(0.0);
@@ -47,7 +48,7 @@ pub fn simulate_simplified_kernel(
                 budget_shortfall -= interest_payment;
             } else {
                 marks += 1;
-                capital = 0.0;
+                //capital = 0.0;
                 if marks >= 3 {
                     //happiness -= 500.0;
                     happiness = -500.0;
@@ -57,8 +58,18 @@ pub fn simulate_simplified_kernel(
                 }
             }
         }
-        // FIXME:
-        //budget_shortfall += 4.0; // Assume buying cheap award
+        if let Some((award, interest_rebate)) = awards_with_rebates[i] {
+            happiness += award.base_happiness
+                * personality.happiness_multiplier
+                * (1.0 - 0.2 * awards_in_a_row as f64);
+            let interest_payment = remaining_balance * yearly_interest_rate / 12.0;
+            let full_cost = award.cost + interest_rebate * interest_payment;
+            budget_shortfall += full_cost;
+            score -= full_cost;
+            awards_in_a_row = (awards_in_a_row + 1).min(5);
+        } else {
+            awards_in_a_row = (awards_in_a_row - 1).max(0);
+        }
         budget_required = budget_required.max(budget_shortfall);
     }
     score += happiness;
@@ -104,6 +115,9 @@ pub fn simulate(
             .all(|(n, _)| indata.map.customers.iter().any(|c| c.name == *n)),
         "All requested customers must exist on the chosen map!"
     );
+    for (_, s) in submission {
+        assert!(s.months_to_pay_back_loan <= 4 * indata.map.game_length_in_months);
+    }
 
     let accepted_customers: Vec<_> = submission
         .iter()
@@ -190,18 +204,15 @@ pub fn simulate(
             // PayBills
             let cost_of_monthly_expense =
                 customer.monthly_expenses * personality.living_standard_multiplier;
-            const BUG_STUDENT_LOAN_ALWAYS_FALSE: bool = true;
-            let cost_of_student_loan =
-                if customer.has_student_loan && (i % 3 == 0) && BUG_STUDENT_LOAN_ALWAYS_FALSE {
-                    2000.0
-                } else {
-                    0.0
-                };
+            let cost_of_student_loan = if customer.has_student_loan && (i % 3 == 0) {
+                2000.0
+            } else {
+                0.0
+            };
             let cost_of_kids = customer.number_of_kids * 2000.0;
-            let cost_of_mortgage = customer.home_mortgage * 0.01;
-            // NOTE: This is a sign error in their code
+            let cost_of_mortgage = customer.home_mortgage * 0.001;
             customer_state.capital -=
-                cost_of_monthly_expense - cost_of_student_loan - cost_of_kids - cost_of_mortgage;
+                cost_of_monthly_expense + cost_of_student_loan + cost_of_kids + cost_of_mortgage;
 
             // CanPayLoan
             if i < customer_submission.months_to_pay_back_loan {
@@ -210,6 +221,18 @@ pub fn simulate(
                     / 12.0;
                 let amortization =
                     customer.loan.amount / customer_submission.months_to_pay_back_loan as f64;
+                /*
+                dbg!(
+                    customer.name,
+                    customer_submission.yearly_interest_rate,
+                    customer_submission.months_to_pay_back_loan,
+                    customer_state.capital,
+                    interest_payment,
+                    amortization,
+                    customer_state.marks,
+                    ret.total_profit
+                );
+                */
                 if interest_payment + amortization <= customer_state.capital {
                     // PayLoan
                     customer_state.capital -= interest_payment + amortization;
@@ -221,7 +244,7 @@ pub fn simulate(
                 } else {
                     // IncrementMark
                     customer_state.marks += 1;
-                    customer_state.capital = 0.0;
+                    //customer_state.capital = 0.0;
                     const MARKS_LIMIT: usize = 3;
                     if customer_state.marks >= MARKS_LIMIT {
                         customer_state.is_bankrupt = true;
@@ -234,6 +257,7 @@ pub fn simulate(
             }
 
             // Award
+            // NOTE: They have bug where customer is not paid back interest.
             if let Some(award) = customer_submission.awards[i] {
                 let crate::model::Award {
                     cost,
@@ -268,6 +292,7 @@ pub fn simulate(
         ret.happiness_score += customer_state.happiness;
     }
 
+    ret.total_profit = ret.total_profit.trunc();
     ret.total_score = (ret.environmental_impact + ret.happiness_score + ret.total_profit).trunc();
     ret
 }

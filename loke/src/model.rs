@@ -57,7 +57,7 @@ pub struct Personality {
 pub struct Awards {
     pub awards: BTreeMap<String, Award>,
 }
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Copy, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Award {

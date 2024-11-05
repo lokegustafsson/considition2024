@@ -1,6 +1,6 @@
 use crate::{
     api::{CustomerSubmission, InputData},
-    model::{Customer, Personality},
+    model::{Award, Customer, Personality},
 };
 use rayon::prelude::*;
 
@@ -8,11 +8,7 @@ const HEAVY: bool = false;
 
 pub fn blackbox_locally_optimized_submission(
     indata: &InputData,
-) -> (
-    f64,
-    Option<&'static str>,
-    Vec<(&'static str, CustomerSubmission)>,
-) {
+) -> (f64, Vec<(&'static str, CustomerSubmission)>) {
     /*
     let best_award = indata
         .awards
@@ -28,17 +24,23 @@ pub fn blackbox_locally_optimized_submission(
     let best_award = *best_award.0;
     */
     //let best_award = Some("GiftCard");
-    let best_award = None;
+    //let best_award = None;
 
     #[derive(Debug)]
     struct BlackboxOpt {
         customer: Customer,
         personality: Personality,
         game_length_in_months: usize,
+        awards: Vec<Option<(Award, f64)>>,
     }
     fn param_to_rate_months(p: &Vec<f64>, personality: &Personality) -> (f64, usize) {
-        let rate = p[0] * personality.accepted_max_interest
-            + (1.0 - p[0]) * personality.accepted_min_interest;
+        let p0 = if personality.accepted_max_interest > 1.0 {
+            p[0].powf(8.0)
+        } else {
+            p[0]
+        };
+        let rate =
+            p0 * personality.accepted_max_interest + (1.0 - p0) * personality.accepted_min_interest;
         let months = p[1].max(0.0) as usize;
         (rate, months)
     }
@@ -49,10 +51,11 @@ pub fn blackbox_locally_optimized_submission(
             let (rate, months) = param_to_rate_months(p, &self.personality);
             let (score, _budget_required) = crate::whitebox::simulate_simplified_kernel(
                 &self.customer,
-                self.personality.living_standard_multiplier,
+                &self.personality,
                 rate,
                 months,
                 self.game_length_in_months,
+                &self.awards,
             );
             Ok(-score)
         }
@@ -73,9 +76,14 @@ pub fn blackbox_locally_optimized_submission(
                 customer: customer.clone(),
                 personality: personality.clone(),
                 game_length_in_months: indata.map.game_length_in_months,
+                // TODO: BlackboxOpt assuming no awards
+                awards: vec![None; indata.map.game_length_in_months],
             };
             let solver = argmin::solver::particleswarm::ParticleSwarm::<Vec<f64>, f64, _>::new(
-                (vec![0.0, 0.0], vec![1.0, 2e9]),
+                (
+                    vec![0.0, 0.0],
+                    vec![1.0, (4 * indata.map.game_length_in_months) as f64],
+                ),
                 if HEAVY { 1000 } else { 10 },
             );
             let res = argmin::core::Executor::new(opt, solver)
@@ -92,34 +100,105 @@ pub fn blackbox_locally_optimized_submission(
                 &res.state().best_individual.as_ref().unwrap().position,
                 &personality.clone(),
             );
-            let (score, budget_required) = crate::whitebox::simulate_simplified_kernel(
-                &customer,
-                personality.living_standard_multiplier,
-                rate,
-                months,
-                indata.map.game_length_in_months,
-            );
 
-            tracing::info!(customer.name, rate, months, score, budget_required,);
-            (
-                (
-                    customer.name,
-                    CustomerSubmission {
-                        months_to_pay_back_loan: months,
-                        yearly_interest_rate: rate,
-                        awards: (0..(indata.map.game_length_in_months))
-                            .map(|_| best_award)
-                            .collect(),
-                    },
-                ),
-                score,
-                budget_required,
-            )
+            let best_award = {
+                let mk_score = |(an, a): (&'static str, Award)| -> f64 {
+                    let interest_cost = match an {
+                        "NoInterestRate" => 1.0,
+                        "HalfInterestRate" => 0.5,
+                        _ => 0.0,
+                    } * customer.loan.amount
+                        * rate
+                        / 12.0;
+                    a.base_happiness * personality.happiness_multiplier - a.cost - interest_cost
+                };
+                let best_award = indata
+                    .awards
+                    .iter()
+                    .map(|(n, a)| (*n, *a))
+                    .max_by(|a1, a2| {
+                        let score1 = mk_score(*a1);
+                        let score2 = mk_score(*a2);
+                        PartialOrd::partial_cmp(&score1, &score2).unwrap()
+                    })
+                    .unwrap();
+                if mk_score(best_award) <= 0.0 {
+                    None
+                } else {
+                    Some(best_award)
+                }
+            };
+
+            (0..((indata.map.game_length_in_months + 1) / 2 + 4)
+                .min(indata.map.game_length_in_months))
+                .map(|num_awards| {
+                    let mut awards: Vec<Option<&str>> =
+                        vec![None; indata.map.game_length_in_months];
+                    let mut sim_awards: Vec<Option<(Award, f64)>> =
+                        vec![None; indata.map.game_length_in_months];
+
+                    let best_award_name = best_award.map(|a| a.0);
+                    let best_award_sim = best_award.map(|a| {
+                        (
+                            a.1,
+                            match a.0 {
+                                "NoInterestRate" => 1.0,
+                                "HalfInterestRate" => 0.5,
+                                _ => 0.0,
+                            },
+                        )
+                    });
+
+                    let cutoff = (indata.map.game_length_in_months + 1) / 2;
+                    for i in 0..num_awards.min(cutoff) {
+                        awards[sim_awards.len() - 1 - 2 * i] = best_award_name;
+                        sim_awards[awards.len() - 1 - 2 * i] = best_award_sim;
+                    }
+                    for i in 0..num_awards.saturating_sub(cutoff) {
+                        awards[sim_awards.len() - 2 - 2 * i] = best_award_name;
+                        sim_awards[awards.len() - 2 - 2 * i] = best_award_sim;
+                    }
+                    let (score, budget_required) = crate::whitebox::simulate_simplified_kernel(
+                        &customer,
+                        personality,
+                        rate,
+                        months,
+                        indata.map.game_length_in_months,
+                        &sim_awards,
+                    );
+                    tracing::info!(
+                        customer.name,
+                        rate,
+                        months,
+                        best_award_name,
+                        score,
+                        budget_required
+                    );
+                    (
+                        (
+                            customer.name,
+                            CustomerSubmission {
+                                months_to_pay_back_loan: months,
+                                yearly_interest_rate: rate,
+                                awards: awards.into(),
+                            },
+                        ),
+                        score,
+                        round_pre_knapsack(budget_required),
+                    )
+                })
+                .collect::<Vec<(_, f64, usize)>>()
         })
         .collect();
 
-    let (ret, ret_score) = knapsack(ret, indata.map.budget);
-    (ret_score, best_award, ret)
+    // NOTE: Incorrect if fractional loans
+    fn round_pre_knapsack(x: f64) -> usize {
+        // TODO: Maybe ceil
+        x.round() as usize
+    }
+
+    let (ret, ret_score) = knapsack(ret, round_pre_knapsack(indata.map.budget));
+    (ret_score, ret)
 }
 
 fn gcd(mut x: usize, mut y: usize) -> usize {
@@ -131,70 +210,83 @@ fn gcd(mut x: usize, mut y: usize) -> usize {
 
 // O(budget * items.len())
 // NOTE: At integer resolution
-fn knapsack<T: Clone>(items: Vec<(T, f64, f64)>, budget: f64) -> (Vec<T>, f64) {
-    let mut budget = budget as usize;
-
+fn knapsack<T: Clone>(mut items: Vec<Vec<(T, f64, usize)>>, mut budget: usize) -> (Vec<T>, f64) {
     let mut d = budget;
-    let mut items: Vec<(T, f64, usize)> = items
-        .into_iter()
-        .map(|(it, s, c)| {
-            let c = c.round() as usize;
+    for candidates in &items {
+        for &(_, _, c) in candidates {
             d = gcd(d, c);
-            (it, s, c)
-        })
-        .collect();
-    budget /= d;
-    for it in &mut items {
-        it.2 /= d;
+        }
     }
+    budget /= d;
+    for candidates in &mut items {
+        for it in candidates {
+            it.2 /= d;
+        }
+    }
+
     // items of (opaque, score, cost)
-    // dp[<=item][budget_spent] = (score, last chosen)
-    let mut dp: Vec<Vec<(f64, usize)>> = vec![vec![(0.0, usize::MAX); budget + 1]; items.len() + 1];
+    // dp[<=category][budget_spent] = (score, last chosen cat, last chosen variant)
+    let mut dp: Vec<Vec<(f64, u32, u32)>> =
+        vec![vec![(0.0, u32::MAX, u32::MAX); budget + 1]; items.len() + 1];
     for i in 0..items.len() {
-        let (_, score, cost) = items[i];
         for b in 0..=budget {
             // dont buy
             if dp[i][b].0 > dp[i + 1][b].0 {
                 dp[i + 1][b] = dp[i][b];
             }
         }
-        for b in 0..=(budget - cost) {
-            // buy additional
-            let cand_score = dp[i][b].0 + score;
-            if cand_score > dp[i + 1][b + cost].0 {
-                dp[i + 1][b + cost] = (cand_score, i);
+        for (variant, (_, score, cost)) in items[i].iter().enumerate() {
+            for b in 0..=(budget - cost) {
+                // buy additional
+                let cand_score = dp[i][b].0 + score;
+                if cand_score > dp[i + 1][b + cost].0 {
+                    dp[i + 1][b + cost] = (cand_score, i as u32, variant as u32);
+                }
             }
         }
     }
-    let (winner_score, mut winner_last) = dp[items.len()][budget].clone();
+    let (winner_score, mut winner_last, mut winner_variant) = dp[items.len()][budget].clone();
     let mut winner_items = vec![];
     let mut winner_loop_budget = budget;
-    while winner_last != usize::MAX {
-        winner_items.push(items[winner_last].0.clone());
-        winner_loop_budget -= items[winner_last].2;
+    while winner_last != u32::MAX {
+        winner_items.push(
+            items[winner_last as usize][winner_variant as usize]
+                .0
+                .clone(),
+        );
+        winner_loop_budget -= items[winner_last as usize][winner_variant as usize].2;
 
-        winner_last = dp[winner_last][winner_loop_budget].1;
+        (_, winner_last, winner_variant) = dp[winner_last as usize][winner_loop_budget];
     }
     (winner_items, winner_score)
 }
 
 #[test]
 fn test_knapsack() {
-    assert_eq!(knapsack(vec![(1, 1.23, 1.0)], 2.0), (vec![1], 1.23));
+    assert_eq!(knapsack(vec![vec![(1, 1.23, 1)]], 2), (vec![1], 1.23));
     assert_eq!(
-        knapsack(vec![(1, 1.23, 1.0), (2, 2.23, 1.0)], 2.0),
+        knapsack(vec![vec![(1, 1.23, 1)], vec![(2, 2.23, 1)]], 2),
         (vec![2, 1], 3.46)
     );
     assert_eq!(
-        knapsack(vec![(0, 5.0, 0.9), (1, 1.23, 1.0), (2, 2.23, 1.0)], 2.0),
+        knapsack(
+            vec![vec![(0, 5.0, 9)], vec![(1, 1.23, 10)], vec![(2, 2.23, 10)]],
+            20
+        ),
         (vec![2, 0], 7.23)
     );
     assert_eq!(
-        knapsack(vec![(1, 1.23, 1.0), (0, 5.0, 0.9), (2, 2.23, 1.0)], 2.0),
+        knapsack(
+            vec![vec![(1, 1.23, 10)], vec![(0, 5.0, 9)], vec![(2, 2.23, 1)]],
+            2
+        ),
         (vec![2, 0], 7.23)
     );
     assert_eq!(
-        knapsack(vec![(0, 5.0, 0.9), (2, 2.23, 1.0), (1, 1.23, 1.0),], 2.0),
+        knapsack(
+            vec![vec![(0, 5.0, 9)], vec![(2, 2.23, 10)], vec![(1, 1.23, 10)]],
+            20
+        ),
         (vec![2, 0], 7.23)
     );
 }

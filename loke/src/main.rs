@@ -38,56 +38,44 @@ fn main() {
 
 async fn run(api: &Api, indata: &InputData) {
     const WHICH: &str = "localopt";
-    let results = match WHICH {
-        "sweep" => sweep(api, indata).await,
+    match WHICH {
+        "sweep" => {
+            let results = sweep(api, indata).await;
+            println!();
+            let mut best_tot_score = 0.0;
+            for (rate, award, score, whitebox_score) in results {
+                let record = if score.total_score >= best_tot_score {
+                    best_tot_score = score.total_score;
+                    " <=============== RECORD!"
+                } else {
+                    ""
+                };
+                println!("{score} @ rate={rate:.3} award={award:?}{record}");
+                if score.environmental_impact != whitebox_score.environmental_impact
+                    || (score.happiness_score - whitebox_score.happiness_score).abs() > 0.4
+                    || (score.total_score - whitebox_score.total_score).abs() > 1e-5
+                {
+                    eprintln!("mismatch\n    real={score:?}\nwhitebox={whitebox_score:?}\n");
+                }
+            }
+        }
         "localopt" => {
-            let (expected_score, award, submission) =
-                opt::blackbox_locally_optimized_submission(indata);
+            let (expected_score, submission) = opt::blackbox_locally_optimized_submission(indata);
             let score = api.evaluate(&indata, &submission).await;
             let whitebox_score = whitebox::simulate(&indata, &submission);
             dbg!(&expected_score, &whitebox_score, &score);
-            vec![(0.0, award, score, whitebox_score)]
         }
         "remoteopt" => {
             todo!()
         }
         _ => unimplemented!(),
     };
-
-    println!();
-    let mut best_tot_score = 0.0;
-    for (rate, award, score, whitebox_score) in results {
-        let record = if score.total_score >= best_tot_score {
-            best_tot_score = score.total_score;
-            " <=============== RECORD!"
-        } else {
-            ""
-        };
-        println!("{score} @ rate={rate:.3} award={award:?}{record}");
-        if score.environmental_impact != whitebox_score.environmental_impact
-            || score.happiness_score != whitebox_score.happiness_score
-            || (score.total_score - whitebox_score.total_score).abs() > 1e-5
-        {
-            eprintln!("mismatch\n    real={score:?}\nwhitebox={whitebox_score:?}\n");
-        }
-    }
 }
 
 async fn sweep(api: &Api, indata: &InputData) -> Vec<(f64, Option<&'static str>, Score, Score)> {
-    let rates = linspace(0.0, 6.0, 13);
-    let awards = iter::once(None).chain(indata.awards.keys().copied().map(Some));
-    /*
-    let awards = iter::once(Some(
-        *indata
-            .awards
-            .iter()
-            .max_by(|(_, v1), (_, v2)| {
-                PartialOrd::partial_cmp(&v1.base_happiness, &v2.base_happiness).unwrap()
-            })
-            .unwrap()
-            .0,
-    ));
-    */
+    let rates = linspace(0.0, 6.0, 121);
+    //let awards = iter::once(None).chain(indata.awards.keys().copied().map(Some));
+    let awards = iter::once(None);
     let parameters = rates.cartesian_product(awards);
 
     return futures::future::join_all(parameters.map(|(rate, award)| async move {
@@ -107,13 +95,13 @@ async fn sweep(api: &Api, indata: &InputData) -> Vec<(f64, Option<&'static str>,
             .map
             .customers
             .iter()
-            .filter(|customer| customer.name == "Nona Lang")
+            //.filter(|c| c.name == "Glenn")
             .map(|customer| {
                 let personality = indata.personalities.get(&customer.personality);
                 (
                     customer.name,
                     CustomerSubmission {
-                        months_to_pay_back_loan: indata.map.game_length_in_months,
+                        months_to_pay_back_loan: 4 * indata.map.game_length_in_months,
                         yearly_interest_rate: match personality {
                             Some(&Personality {
                                 accepted_min_interest,
