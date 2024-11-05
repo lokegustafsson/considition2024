@@ -122,50 +122,60 @@ pub fn blackbox_locally_optimized_submission(
     (ret_score, best_award, ret)
 }
 
+fn gcd(mut x: usize, mut y: usize) -> usize {
+    while x != 0 {
+        (x, y) = (y % x, x);
+    }
+    y
+}
+
 // O(budget * items.len())
-// At integer resolution
+// NOTE: At integer resolution
 fn knapsack<T: Clone>(items: Vec<(T, f64, f64)>, budget: f64) -> (Vec<T>, f64) {
+    let mut budget = budget as usize;
+
+    let mut d = budget;
+    let mut items: Vec<(T, f64, usize)> = items
+        .into_iter()
+        .map(|(it, s, c)| {
+            let c = c.round() as usize;
+            d = gcd(d, c);
+            (it, s, c)
+        })
+        .collect();
+    budget /= d;
+    for it in &mut items {
+        it.2 /= d;
+    }
     // items of (opaque, score, cost)
     // dp[<=item][budget_spent] = (score, last chosen)
-    let discrete_budget = budget as usize;
-    let mut dp: Vec<Vec<(f64, usize)>> =
-        vec![vec![(f64::NEG_INFINITY, usize::MAX); discrete_budget + 1]; items.len()];
-    fn ii(x: f64) -> usize {
-        x.round() as usize
-    }
-    fn mmax<T: PartialOrd>(x: T, y: T) -> T {
-        if x.partial_cmp(&y).unwrap() == std::cmp::Ordering::Less {
-            y
-        } else {
-            x
-        }
-    }
+    let mut dp: Vec<Vec<(f64, usize)>> = vec![vec![(0.0, usize::MAX); budget + 1]; items.len() + 1];
     for i in 0..items.len() {
         let (_, score, cost) = items[i];
-        for b in ii(cost)..=discrete_budget {
-            dp[i][b] = mmax(dp[i][b], (score, i));
-            if i != 0 {
-                dp[i][b] = mmax(
-                    mmax(dp[i][b], (dp[i - 1][b - ii(cost)].0 + score, i)),
-                    dp[i - 1][b],
-                );
+        for b in 0..=budget {
+            // dont buy
+            if dp[i][b].0 > dp[i + 1][b].0 {
+                dp[i + 1][b] = dp[i][b];
+            }
+        }
+        for b in 0..=(budget - cost) {
+            // buy additional
+            let cand_score = dp[i][b].0 + score;
+            if cand_score > dp[i + 1][b + cost].0 {
+                dp[i + 1][b + cost] = (cand_score, i);
             }
         }
     }
-    let mut ret = Vec::new();
-    let mut b = discrete_budget;
-    let mut i = dp[items.len() - 1][discrete_budget].1;
-    let ret_score = dp[items.len() - 1][discrete_budget].0;
-    while i != usize::MAX {
-        ret.push(items[i].0.clone());
-        b -= ii(items[i].2);
-        if i == 0 {
-            break;
-        }
-        let new_i = dp[i - 1][b].1;
-        i = new_i;
+    let (winner_score, mut winner_last) = dp[items.len()][budget].clone();
+    let mut winner_items = vec![];
+    let mut winner_loop_budget = budget;
+    while winner_last != usize::MAX {
+        winner_items.push(items[winner_last].0.clone());
+        winner_loop_budget -= items[winner_last].2;
+
+        winner_last = dp[winner_last][winner_loop_budget].1;
     }
-    (ret, ret_score)
+    (winner_items, winner_score)
 }
 
 #[test]
