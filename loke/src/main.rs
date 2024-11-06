@@ -24,8 +24,8 @@ fn main() {
     )
     .expect("enabling global logger");
 
-    //let indata = InputData::load("Gothenburg");
-    let indata = InputData::load("Nottingham");
+    let indata = InputData::load("Gothenburg");
+    //let indata = InputData::load("Nottingham");
 
     let api = Api::new();
 

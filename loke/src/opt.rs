@@ -4,7 +4,7 @@ use crate::{
 };
 use rayon::prelude::*;
 
-const HEAVY: bool = false;
+const HEAVY: bool = true;
 
 pub fn blackbox_locally_optimized_submission(
     indata: &InputData,
@@ -84,14 +84,14 @@ pub fn blackbox_locally_optimized_submission(
                     vec![0.0, 0.0],
                     vec![1.0, (4 * indata.map.game_length_in_months) as f64],
                 ),
-                if HEAVY { 1000 } else { 10 },
+                if HEAVY { 100 } else { 10 },
             );
             let res = argmin::core::Executor::new(opt, solver)
                 .add_observer(
                     argmin_observer_slog::SlogLogger::term(),
                     argmin::core::observers::ObserverMode::NewBest,
                 )
-                .configure(|state| state.max_iters(if HEAVY { 100_000 } else { 10_000 }))
+                .configure(|state| state.max_iters(if HEAVY { 20_000 } else { 10_000 }))
                 .run()
                 .unwrap();
             //dbg!(res.problem());
