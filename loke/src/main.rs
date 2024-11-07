@@ -25,7 +25,8 @@ fn main() {
     .expect("enabling global logger");
 
     //let indata = InputData::load("Gothenburg");
-    let indata = InputData::load("Nottingham");
+    //let indata = InputData::load("Nottingham");
+    let indata = InputData::load("Almhult");
     dbg!(&indata.awards);
 
     let api = Api::new();
@@ -96,14 +97,14 @@ async fn sweep(api: &Api, indata: &InputData) -> Vec<(f64, Option<&'static str>,
             .map
             .customers
             .iter()
-            //.filter(|c| c.name == "Glenn")
+            .filter(|c| c.name == "Gary Kreiger")
             .map(|customer| {
                 let personality = indata.personalities.get(&customer.personality).unwrap();
                 (
                     customer.name,
                     CustomerSubmission {
-                        months_to_pay_back_loan: personality.months_limit_multiplier
-                            * indata.map.game_length_in_months,
+                        months_to_pay_back_loan: //personality.months_limit_multiplier
+                            1* indata.map.game_length_in_months,
                         yearly_interest_rate: rate.clamp(
                             personality.accepted_min_interest,
                             personality.accepted_max_interest,

@@ -5,9 +5,12 @@ use crate::{
 use rayon::prelude::*;
 
 const USE_VERY_SLOW_BUT_GOOD_DP: bool = true;
-const NUM_PARTICLES: usize = 20;
-const MAX_ITERS: u64 = 10000;
-const AWARD_CONF_TTL: usize = 1000;
+//const NUM_PARTICLES: usize = 20;
+//const MAX_ITERS: u64 = 10000;
+//const AWARD_CONF_TTL: usize = 1000;
+const NUM_PARTICLES: usize = 3;
+const MAX_ITERS: u64 = 100;
+const AWARD_CONF_TTL: usize = 30;
 
 #[derive(Clone)]
 struct Param(Vec<f64>, usize);

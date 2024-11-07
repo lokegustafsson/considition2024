@@ -16,8 +16,10 @@ pub struct Map {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Customer {
+    #[serde(deserialize_with = "leak_string")]
     pub name: &'static str,
     pub loan: Loan,
+    pub gender: String,
     pub personality: String,
     pub capital: f64,
     pub income: f64,
@@ -27,6 +29,13 @@ pub struct Customer {
     pub home_mortgage: f64,
     #[serde(alias = "hasStudentLoans")]
     pub has_student_loan: bool,
+}
+fn leak_string<'de, D>(d: D) -> Result<&'static str, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = String::deserialize(d)?;
+    Ok(s.leak())
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
