@@ -4,13 +4,13 @@ use crate::{
 };
 use rayon::prelude::*;
 
-const USE_VERY_SLOW_BUT_GOOD_DP: bool = true;
+const USE_VERY_SLOW_BUT_GOOD_DP: bool = false;
 //const NUM_PARTICLES: usize = 20;
 //const MAX_ITERS: u64 = 10000;
 //const AWARD_CONF_TTL: usize = 1000;
-const NUM_PARTICLES: usize = 3;
-const MAX_ITERS: u64 = 100;
-const AWARD_CONF_TTL: usize = 30;
+const NUM_PARTICLES: usize = 200;
+const MAX_ITERS: u64 = 1000; // 0
+const AWARD_CONF_TTL: usize = 100_000;
 
 #[derive(Clone)]
 struct Param(Vec<f64>, usize);
@@ -210,63 +210,40 @@ pub fn blackbox_locally_optimized_submission(
                 })
                 .collect()
             } else {
-                let best_award = {
-                    let mk_score = |(an, a): (&'static str, Award)| -> f64 {
-                        let interest_cost = match an {
-                            "NoInterestRate" => 1.0,
-                            "HalfInterestRate" => 0.5,
-                            _ => 0.0,
-                        } * customer.loan.amount
-                            * rate
-                            / 12.0;
-                        a.base_happiness * personality.happiness_multiplier - a.cost - interest_cost
-                    };
-                    let best_award = indata
-                        .awards
-                        .iter()
-                        .map(|(n, a)| (*n, *a))
-                        .max_by(|a1, a2| {
-                            let score1 = mk_score(*a1);
-                            let score2 = mk_score(*a2);
-                            PartialOrd::partial_cmp(&score1, &score2).unwrap()
-                        })
-                        .unwrap();
-                    if mk_score(best_award) <= 0.0 {
-                        None
-                    } else {
-                        Some(best_award)
-                    }
-                };
-
-                (0..((indata.map.game_length_in_months + 1) / 2 + 4)
-                    .min(indata.map.game_length_in_months))
-                    .map(|num_awards| {
+                (0..36)
+                    .filter_map(|idx| {
+                        let a = idx % 6;
+                        let b = idx / 6;
+                        if a == b {
+                            return None;
+                        }
                         let mut awards: Vec<Option<&str>> =
                             vec![None; indata.map.game_length_in_months];
                         let mut sim_awards: Vec<Option<(Award, f64)>> =
                             vec![None; indata.map.game_length_in_months];
-
-                        let best_award_name = best_award.map(|a| a.0);
-                        let best_award_sim = best_award.map(|a| {
-                            (
-                                a.1,
-                                match a.0 {
+                        let mut lasta = true;
+                        for i in 0..indata.map.game_length_in_months {
+                            if i % 4 != 3 {
+                                continue;
+                            }
+                            let xx = if !lasta {
+                                lasta = true;
+                                award_available[a]
+                            } else {
+                                lasta = false;
+                                award_available[b]
+                            };
+                            awards[i] = Some(xx.0);
+                            sim_awards[i] = Some((
+                                xx.1,
+                                match xx.0 {
                                     "NoInterestRate" => 1.0,
                                     "HalfInterestRate" => 0.5,
                                     _ => 0.0,
                                 },
-                            )
-                        });
+                            ));
+                        }
 
-                        let cutoff = (indata.map.game_length_in_months + 1) / 2;
-                        for i in 0..num_awards.min(cutoff) {
-                            awards[sim_awards.len() - 1 - 2 * i] = best_award_name;
-                            sim_awards[awards.len() - 1 - 2 * i] = best_award_sim;
-                        }
-                        for i in 0..num_awards.saturating_sub(cutoff) {
-                            awards[sim_awards.len() - 2 - 2 * i] = best_award_name;
-                            sim_awards[awards.len() - 2 - 2 * i] = best_award_sim;
-                        }
                         let (score, budget_required, bankruptcy_at) =
                             crate::whitebox::simulate_simplified_kernel(
                                 &customer,
@@ -285,13 +262,12 @@ pub fn blackbox_locally_optimized_submission(
                             customer.name,
                             rate,
                             months,
-                            best_award_name,
                             score,
                             budget_required,
                             "{}",
                             bankruptcy_at,
                         );
-                        (
+                        Some((
                             (
                                 customer.name,
                                 CustomerSubmission {
@@ -301,22 +277,26 @@ pub fn blackbox_locally_optimized_submission(
                                 },
                             ),
                             score,
-                            round_pre_knapsack(budget_required),
-                        )
+                            round_pre_knapsack(budget_required, true),
+                        ))
                     })
-                    .filter(|(_, score, _)| *score > 0.0)
+                    .filter(|(_, score, cost)| *score > 0.0 && *cost < indata.map.budget as usize)
                     .collect::<Vec<(_, f64, usize)>>()
             }
         })
         .collect();
 
     // NOTE: Incorrect if fractional loans
-    fn round_pre_knapsack(x: f64) -> usize {
+    fn round_pre_knapsack(x: f64, cceil: bool) -> usize {
         // TODO: Maybe ceil
-        x.round() as usize
+        if cceil {
+            (x.ceil() / 10.0) as usize
+        } else {
+            (x.floor() / 10.0) as usize
+        }
     }
 
-    let (ret, ret_score) = knapsack(ret, round_pre_knapsack(indata.map.budget));
+    let (ret, ret_score) = knapsack(ret, round_pre_knapsack(indata.map.budget, false));
     (ret_score, ret)
 }
 
@@ -355,7 +335,10 @@ fn knapsack<T: Clone>(mut items: Vec<Vec<(T, f64, usize)>>, mut budget: usize) -
             }
         }
         for (variant, (_, score, cost)) in items[i].iter().enumerate() {
-            for b in 0..=(budget - cost) {
+            if budget < *cost {
+                continue;
+            }
+            for b in 0..=budget.saturating_sub(*cost) {
                 // buy additional
                 let cand_score = dp[i][b].0 + score;
                 if cand_score > dp[i + 1][b + cost].0 {

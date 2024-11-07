@@ -26,7 +26,8 @@ fn main() {
 
     //let indata = InputData::load("Gothenburg");
     //let indata = InputData::load("Nottingham");
-    let indata = InputData::load("Almhult");
+    let mut indata = InputData::load("Almhult");
+    indata.map.budget -= 100_000.0; // TODO
     dbg!(&indata.awards);
 
     let api = Api::new();
@@ -63,8 +64,9 @@ async fn run(api: &Api, indata: &InputData) {
         }
         "localopt" => {
             let (expected_score, submission) = opt::blackbox_locally_optimized_submission(indata);
-            let score = api.evaluate(&indata, &submission).await;
             let whitebox_score = whitebox::simulate(&indata, &submission);
+            dbg!(&expected_score, &whitebox_score);
+            let score = api.evaluate(&indata, &submission).await;
             dbg!(&expected_score, &whitebox_score, &score);
         }
         "remoteopt" => {

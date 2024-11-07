@@ -174,8 +174,8 @@ impl Api {
                             "{}\n{}\n{:#?}\n",
                             response.status(),
                             response.text().await.unwrap(),
-                            request
-                            //1
+                            //request
+                            1
                         );
                     }
                 }
