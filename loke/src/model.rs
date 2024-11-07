@@ -46,6 +46,8 @@ pub struct Personalities {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Personality {
+    #[serde(default)]
+    pub months_limit_multiplier: usize,
     pub happiness_multiplier: f64,
     pub accepted_min_interest: f64,
     pub accepted_max_interest: f64,
@@ -61,6 +63,8 @@ pub struct Awards {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Award {
+    #[serde(default)]
+    pub id: usize,
     pub cost: f64,
     pub base_happiness: f64,
 }
@@ -92,7 +96,7 @@ pub struct Request {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Response {
-    pub achievements_unlocked: Vec<serde_json::Value>,
+    //pub achievements_unlocked: Vec<String>,
     pub game_id: String,
     pub message: (),
     pub score: Score,

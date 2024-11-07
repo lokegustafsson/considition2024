@@ -41,7 +41,7 @@ pub fn blackbox_locally_optimized_submission(
         };
         let rate =
             p0 * personality.accepted_max_interest + (1.0 - p0) * personality.accepted_min_interest;
-        let months = p[1].max(0.0) as usize;
+        let months = (p[1] * personality.months_limit_multiplier as f64).round() as usize;
         (rate, months)
     }
     impl argmin::core::CostFunction for BlackboxOpt {
@@ -49,14 +49,15 @@ pub fn blackbox_locally_optimized_submission(
         type Output = f64;
         fn cost(&self, p: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
             let (rate, months) = param_to_rate_months(p, &self.personality);
-            let (score, _budget_required) = crate::whitebox::simulate_simplified_kernel(
-                &self.customer,
-                &self.personality,
-                rate,
-                months,
-                self.game_length_in_months,
-                &self.awards,
-            );
+            let (score, _budget_required, _bankruptcy_at) =
+                crate::whitebox::simulate_simplified_kernel(
+                    &self.customer,
+                    &self.personality,
+                    rate,
+                    months,
+                    self.game_length_in_months,
+                    &self.awards,
+                );
             Ok(-score)
         }
     }
@@ -82,7 +83,7 @@ pub fn blackbox_locally_optimized_submission(
             let solver = argmin::solver::particleswarm::ParticleSwarm::<Vec<f64>, f64, _>::new(
                 (
                     vec![0.0, 0.0],
-                    vec![1.0, (4 * indata.map.game_length_in_months) as f64],
+                    vec![1.0, indata.map.game_length_in_months as f64],
                 ),
                 if HEAVY { 100 } else { 10 },
             );
@@ -158,21 +159,29 @@ pub fn blackbox_locally_optimized_submission(
                         awards[sim_awards.len() - 2 - 2 * i] = best_award_name;
                         sim_awards[awards.len() - 2 - 2 * i] = best_award_sim;
                     }
-                    let (score, budget_required) = crate::whitebox::simulate_simplified_kernel(
-                        &customer,
-                        personality,
-                        rate,
-                        months,
-                        indata.map.game_length_in_months,
-                        &sim_awards,
-                    );
+                    let (score, budget_required, bankruptcy_at) =
+                        crate::whitebox::simulate_simplified_kernel(
+                            &customer,
+                            personality,
+                            rate,
+                            months,
+                            indata.map.game_length_in_months,
+                            &sim_awards,
+                        );
+                    let bankruptcy_at = if bankruptcy_at == -1 {
+                        String::new()
+                    } else {
+                        format!("bankrupt_at={}", bankruptcy_at)
+                    };
                     tracing::info!(
                         customer.name,
                         rate,
                         months,
                         best_award_name,
                         score,
-                        budget_required
+                        budget_required,
+                        "{}",
+                        bankruptcy_at,
                     );
                     (
                         (
@@ -187,6 +196,7 @@ pub fn blackbox_locally_optimized_submission(
                         round_pre_knapsack(budget_required),
                     )
                 })
+                .filter(|(_, score, _)| *score > 0.0)
                 .collect::<Vec<(_, f64, usize)>>()
         })
         .collect();
@@ -245,7 +255,7 @@ fn knapsack<T: Clone>(mut items: Vec<Vec<(T, f64, usize)>>, mut budget: usize) -
             }
         }
     }
-    let (winner_score, mut winner_last, mut winner_variant) = dp[items.len()][budget].clone();
+    let (winner_score, mut winner_last, mut winner_variant) = dp[items.len()][budget];
     let mut winner_items = vec![];
     let mut winner_loop_budget = budget;
     while winner_last != u32::MAX {

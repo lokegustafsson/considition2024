@@ -34,13 +34,28 @@ impl InputData {
                 .unwrap()
                 .awards
                 .into_iter()
-                .map(|(k, v)| (&*k.leak(), v))
+                .enumerate()
+                .map(|(i, (k, mut v))| {
+                    v.id = i;
+                    (&*k.leak(), v)
+                })
                 .collect(),
             personalities: serde_json::from_str::<model::Personalities>(personalities)
                 .unwrap()
                 .personalities
                 .into_iter()
-                .map(|(k, v)| (k.to_lowercase(), v))
+                .map(|(k, mut v)| {
+                    let k = k.to_lowercase();
+                    v.months_limit_multiplier = match &*k {
+                        "conservative" => 1,
+                        "risktaker" => 2,
+                        "innovative" => 3,
+                        "practical" => 4,
+                        "spontaneous" => 5,
+                        _ => unreachable!(),
+                    };
+                    (k, v)
+                })
                 .collect(),
             map: {
                 let mut map = serde_json::from_str::<model::Map>(&map).unwrap();

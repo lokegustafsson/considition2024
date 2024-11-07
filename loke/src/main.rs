@@ -5,7 +5,7 @@ mod whitebox;
 
 use api::{Api, CustomerSubmission, InputData};
 use itertools::Itertools;
-use model::{Personality, Score};
+use model::Score;
 use std::iter;
 use tokio::time::Instant;
 
@@ -24,8 +24,8 @@ fn main() {
     )
     .expect("enabling global logger");
 
-    let indata = InputData::load("Gothenburg");
-    //let indata = InputData::load("Nottingham");
+    //let indata = InputData::load("Gothenburg");
+    let indata = InputData::load("Nottingham");
 
     let api = Api::new();
 
@@ -97,22 +97,16 @@ async fn sweep(api: &Api, indata: &InputData) -> Vec<(f64, Option<&'static str>,
             .iter()
             //.filter(|c| c.name == "Glenn")
             .map(|customer| {
-                let personality = indata.personalities.get(&customer.personality);
+                let personality = indata.personalities.get(&customer.personality).unwrap();
                 (
                     customer.name,
                     CustomerSubmission {
-                        months_to_pay_back_loan: 4 * indata.map.game_length_in_months,
-                        yearly_interest_rate: match personality {
-                            Some(&Personality {
-                                accepted_min_interest,
-                                accepted_max_interest,
-                                ..
-                            }) => rate.clamp(accepted_min_interest, accepted_max_interest),
-                            None => {
-                                tracing::warn!(?customer.personality, "Unknown");
-                                rate
-                            }
-                        },
+                        months_to_pay_back_loan: personality.months_limit_multiplier
+                            * indata.map.game_length_in_months,
+                        yearly_interest_rate: rate.clamp(
+                            personality.accepted_min_interest,
+                            personality.accepted_max_interest,
+                        ),
                         awards: (0..(indata.map.game_length_in_months))
                             .map(|_| award)
                             .collect(),

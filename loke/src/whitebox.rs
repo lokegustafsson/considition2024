@@ -2,6 +2,7 @@ use crate::{
     api::{CustomerSubmission, InputData},
     model::{Award, Personality, Score},
 };
+use std::collections::VecDeque;
 
 // Maximizing score is equivalent to maximizing this per customer
 pub fn simulate_simplified_kernel(
@@ -11,9 +12,11 @@ pub fn simulate_simplified_kernel(
     months_to_pay_back_loan: usize,
     months_game: usize,
     awards_with_rebates: &[Option<(Award, f64)>],
-) -> (f64, f64) {
+) -> (f64, f64, i32) {
+    assert!(personality.accepted_min_interest <= yearly_interest_rate);
+    assert!(yearly_interest_rate <= personality.accepted_max_interest);
     assert_eq!(awards_with_rebates.len(), months_game);
-    assert!(months_to_pay_back_loan <= 4 * months_game);
+    assert!(months_to_pay_back_loan <= personality.months_limit_multiplier * months_game);
     let mut capital: f64 = customer.capital;
     let mut remaining_balance = customer.loan.amount;
     let mut marks = 0;
@@ -24,7 +27,12 @@ pub fn simulate_simplified_kernel(
 
     let mut score = customer.loan.environmental_impact;
     let mut happiness = 0.0;
+    let mut last_3_awards: VecDeque<usize> = VecDeque::new();
+    let mut months_without_awards_in_row = 0;
+    let mut bankruptcy_at = -1;
     'bankruptcy: for i in 0..months_game {
+        budget_required = budget_required.max(budget_shortfall);
+        let mut is_bankrupt = false;
         if i < months_to_pay_back_loan {
             capital += customer.income;
             let cost_of_monthly_expense =
@@ -48,32 +56,49 @@ pub fn simulate_simplified_kernel(
                 budget_shortfall -= interest_payment;
             } else {
                 marks += 1;
-                //capital = 0.0;
                 if marks >= 3 {
-                    //happiness -= 500.0;
                     happiness = -500.0;
-                    break 'bankruptcy;
+                    is_bankrupt = true;
                 } else {
                     happiness -= 50.0;
                 }
             }
         }
         if let Some((award, interest_rebate)) = awards_with_rebates[i] {
-            happiness += award.base_happiness
-                * personality.happiness_multiplier
-                * (1.0 - 0.2 * awards_in_a_row as f64);
+            while last_3_awards.len() >= 3 {
+                last_3_awards.pop_front();
+            }
+            last_3_awards.push_back(award.id);
+            months_without_awards_in_row = 0;
+
+            let happ_mult = if last_3_awards.len() == 3
+                && last_3_awards[0] == last_3_awards[1]
+                && last_3_awards[1] == last_3_awards[2]
+            {
+                -1.0
+            } else {
+                1.0 - 0.2 * awards_in_a_row as f64
+            };
+            happiness += award.base_happiness * personality.happiness_multiplier * happ_mult;
             let interest_payment = remaining_balance * yearly_interest_rate / 12.0;
             let full_cost = award.cost + interest_rebate * interest_payment;
             budget_shortfall += full_cost;
             score -= full_cost;
             awards_in_a_row = (awards_in_a_row + 1).min(5);
         } else {
+            months_without_awards_in_row += 1;
+            if months_without_awards_in_row > 3 {
+                happiness -= 500.0 * months_without_awards_in_row as f64;
+            }
             awards_in_a_row = (awards_in_a_row - 1).max(0);
         }
-        budget_required = budget_required.max(budget_shortfall);
+        if is_bankrupt {
+            bankruptcy_at = i as i32;
+            break 'bankruptcy;
+        }
     }
     score += happiness;
-    (score, budget_required)
+    (score, budget_required, bankruptcy_at)
 }
 
 pub fn simulate(
@@ -99,24 +124,24 @@ pub fn simulate(
         "You must provide customer actions for each month of the designated game length!"
     );
 
-    // NOTE: Yes, zero is legal
-    assert!(
-        submission.iter().all(|(_, s)| {
-            #[allow(unused_comparisons)]
-            let ret = s.months_to_pay_back_loan >= 0;
-            ret
-        }),
-        "Customers need at least one month to pay back loan"
-    );
-
     assert!(
         submission
             .iter()
             .all(|(n, _)| indata.map.customers.iter().any(|c| c.name == *n)),
         "All requested customers must exist on the chosen map!"
     );
-    for (_, s) in submission {
-        assert!(s.months_to_pay_back_loan <= 4 * indata.map.game_length_in_months);
+    for (name, s) in submission {
+        let customer = indata
+            .map
+            .customers
+            .iter()
+            .find(|c| c.name == *name)
+            .unwrap();
+        let personality = &indata.personalities[&customer.personality];
+        assert!(
+            s.months_to_pay_back_loan
+                <= personality.months_limit_multiplier * indata.map.game_length_in_months
+        );
     }
 
     let accepted_customers: Vec<_> = submission
@@ -129,9 +154,11 @@ pub fn simulate(
                 .find(|c| c.name == *customer_name)
                 .unwrap();
             let personality = &indata.personalities[&customer.personality];
-            // TODO: Also initialize loan object
+
             if personality.accepted_min_interest <= sub.yearly_interest_rate
                 && sub.yearly_interest_rate <= personality.accepted_max_interest
+                && sub.months_to_pay_back_loan
+                    <= personality.months_limit_multiplier * indata.map.game_length_in_months
             {
                 Some((customer, sub))
             } else {
@@ -166,6 +193,8 @@ pub fn simulate(
         happiness: f64,
         is_bankrupt: bool,
         awards_in_a_row: usize,
+        last_3_awards: VecDeque<usize>,
+        months_without_awards_in_row: usize,
     }
     let mut customer_state: Vec<CustomerState> = accepted_customers
         .iter()
@@ -176,6 +205,8 @@ pub fn simulate(
             happiness: 0.0,
             is_bankrupt: false,
             awards_in_a_row: 0,
+            last_3_awards: VecDeque::new(),
+            months_without_awards_in_row: 0,
         })
         .collect();
     for i in 0..indata.map.game_length_in_months {
@@ -244,11 +275,9 @@ pub fn simulate(
                 } else {
                     // IncrementMark
                     customer_state.marks += 1;
-                    //customer_state.capital = 0.0;
                     const MARKS_LIMIT: usize = 3;
                     if customer_state.marks >= MARKS_LIMIT {
                         customer_state.is_bankrupt = true;
-                        //customer_state.happiness -= 500.0;
                         customer_state.happiness = -500.0;
                     } else {
                         customer_state.happiness -= 50.0;
@@ -260,12 +289,28 @@ pub fn simulate(
             // NOTE: They have bug where customer is not paid back interest.
             if let Some(award) = customer_submission.awards[i] {
                 let crate::model::Award {
+                    id,
                     cost,
                     base_happiness,
                 } = &indata.awards[award];
-                let happiness_multiplier = 1.0 - 0.2 * (customer_state.awards_in_a_row as f64);
+
+                while customer_state.last_3_awards.len() >= 3 {
+                    customer_state.last_3_awards.pop_front();
+                }
+                customer_state.last_3_awards.push_back(*id);
+                customer_state.months_without_awards_in_row = 0;
+
+                let happ_mult = if customer_state.last_3_awards.len() == 3
+                    && customer_state.last_3_awards[0] == customer_state.last_3_awards[1]
+                    && customer_state.last_3_awards[1] == customer_state.last_3_awards[2]
+                {
+                    -1.0
+                } else {
+                    1.0 - 0.2 * customer_state.awards_in_a_row as f64
+                };
+
                 customer_state.happiness +=
-                    base_happiness * personality.happiness_multiplier * happiness_multiplier;
+                    base_happiness * personality.happiness_multiplier * happ_mult;
                 customer_state.awards_in_a_row = (customer_state.awards_in_a_row + 1).min(5);
                 let cost = *cost
                     + match award {
@@ -284,6 +329,11 @@ pub fn simulate(
                 ret.total_profit -= cost;
                 budget -= cost;
             } else {
+                customer_state.months_without_awards_in_row += 1;
+                if customer_state.months_without_awards_in_row > 3 {
+                    customer_state.happiness -=
+                        500.0 * customer_state.months_without_awards_in_row as f64;
+                }
                 customer_state.awards_in_a_row = customer_state.awards_in_a_row.saturating_sub(1);
             }
         }
