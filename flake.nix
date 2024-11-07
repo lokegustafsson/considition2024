@@ -43,6 +43,7 @@
           nativeBuildInputs = let p = pkgs;
           in [
             p.bashInteractive
+            p.cargo-flamegraph
             p.crate2nix
             (p.rust-bin.stable.latest.default.override {
               extensions = [ "rust-src" "rust-analyzer" ];

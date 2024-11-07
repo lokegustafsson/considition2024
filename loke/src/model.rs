@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroU8};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,8 +63,8 @@ pub struct Awards {
 #[serde(rename_all = "camelCase")]
 #[serde(deny_unknown_fields)]
 pub struct Award {
-    #[serde(default)]
-    pub id: usize,
+    #[serde(default = "non_zero_u8_max")]
+    pub id: std::num::NonZeroU8,
     pub cost: f64,
     pub base_happiness: f64,
 }
@@ -113,4 +113,7 @@ pub struct Score {
 
     /// Sum of the 3 sub-scores
     pub total_score: f64,
+}
+fn non_zero_u8_max() -> NonZeroU8 {
+    NonZeroU8::MAX
 }

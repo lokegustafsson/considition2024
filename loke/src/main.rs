@@ -26,6 +26,7 @@ fn main() {
 
     //let indata = InputData::load("Gothenburg");
     let indata = InputData::load("Nottingham");
+    dbg!(&indata.awards);
 
     let api = Api::new();
 

@@ -4,34 +4,61 @@ use crate::{
 };
 use rayon::prelude::*;
 
-const HEAVY: bool = true;
+const USE_VERY_SLOW_BUT_GOOD_DP: bool = true;
+const NUM_PARTICLES: usize = 20;
+const MAX_ITERS: u64 = 10000;
+const AWARD_CONF_TTL: usize = 1000;
+
+#[derive(Clone)]
+struct Param(Vec<f64>, usize);
+
+impl argmin_math::ArgminAdd<Self, Self> for Param {
+    fn add(&self, other: &Self) -> Self {
+        Self(self.0.add(&other.0), self.1.clone())
+    }
+}
+impl argmin_math::ArgminSub<Self, Self> for Param {
+    fn sub(&self, other: &Self) -> Self {
+        Self(self.0.sub(&other.0), self.1.clone())
+    }
+}
+impl argmin_math::ArgminMinMax for Param {
+    fn min(x: &Self, y: &Self) -> Self {
+        Self(argmin_math::ArgminMinMax::min(&x.0, &y.0), x.1.clone())
+    }
+    fn max(x: &Self, y: &Self) -> Self {
+        Self(argmin_math::ArgminMinMax::max(&x.0, &y.0), x.1.clone())
+    }
+}
+impl argmin_math::ArgminMul<f64, Self> for Param {
+    fn mul(&self, other: &f64) -> Self {
+        Self(self.0.mul(other), self.1.clone())
+    }
+}
+impl argmin_math::ArgminRandom for Param {
+    fn rand_from_range<R: argmin_math::Rng>(min: &Self, max: &Self, rng: &mut R) -> Self {
+        Self(
+            Vec::<f64>::rand_from_range(&min.0, &max.0, rng),
+            u64::rand_from_range(&u64::MIN, &u64::MAX, rng) as usize,
+        )
+    }
+}
+impl argmin_math::ArgminZeroLike for Param {
+    fn zero_like(&self) -> Self {
+        Self(vec![0.0; self.0.len()], self.1)
+    }
+}
 
 pub fn blackbox_locally_optimized_submission(
     indata: &InputData,
 ) -> (f64, Vec<(&'static str, CustomerSubmission)>) {
-    /*
-    let best_award = indata
-        .awards
-        .iter()
-        .max_by(|(_, v1), (_, v2)| {
-            PartialOrd::partial_cmp(&v1.base_happiness, &v2.base_happiness).unwrap()
-        })
-        .unwrap();
-    assert!(
-        best_award.1.base_happiness >= 0.0,
-        "TODO Implement support for skipping award"
-    );
-    let best_award = *best_award.0;
-    */
-    //let best_award = Some("GiftCard");
-    //let best_award = None;
-
     #[derive(Debug)]
     struct BlackboxOpt {
         customer: Customer,
         personality: Personality,
         game_length_in_months: usize,
-        awards: Vec<Option<(Award, f64)>>,
+        award_available: [(&'static str, Award, f64); 6],
+        id_to_awards_ttl: dashmap::DashMap<usize, (Vec<Option<(Award, f64)>>, usize)>,
     }
     fn param_to_rate_months(p: &Vec<f64>, personality: &Personality) -> (f64, usize) {
         let p0 = if personality.accepted_max_interest > 1.0 {
@@ -45,19 +72,50 @@ pub fn blackbox_locally_optimized_submission(
         (rate, months)
     }
     impl argmin::core::CostFunction for BlackboxOpt {
-        type Param = Vec<f64>;
+        type Param = Param;
         type Output = f64;
         fn cost(&self, p: &Self::Param) -> Result<Self::Output, argmin::core::Error> {
-            let (rate, months) = param_to_rate_months(p, &self.personality);
-            let (score, _budget_required, _bankruptcy_at) =
-                crate::whitebox::simulate_simplified_kernel(
+            let (rate, months) = param_to_rate_months(&p.0, &self.personality);
+            let mut entry = self
+                .id_to_awards_ttl
+                .entry(p.1)
+                .or_insert_with(|| (vec![None; self.game_length_in_months], AWARD_CONF_TTL));
+            let (awards, ttl) = entry.value_mut();
+            if *ttl == 0 {
+                let aws = crate::whitebox::simulate_kernel_dp_optimal_awards(
                     &self.customer,
                     &self.personality,
                     rate,
                     months,
                     self.game_length_in_months,
-                    &self.awards,
-                );
+                    &self.award_available,
+                )
+                .into_iter()
+                .max_by(|(s1, _, _), (s2, _, _)| f64::total_cmp(&s1, &s2))
+                .unwrap_or_else(|| (0.0, 0.0, vec![None; self.game_length_in_months]));
+
+                *awards = aws
+                    .2
+                    .into_iter()
+                    .map(|a| {
+                        a.map(|aa| {
+                            let t = self.award_available[(aa.get() as usize) - 1];
+                            (t.1, t.2)
+                        })
+                    })
+                    .collect();
+                *ttl = AWARD_CONF_TTL;
+            } else {
+                *ttl -= 1;
+            }
+            let (score, _budget_required, _bankrupt) = crate::whitebox::simulate_simplified_kernel(
+                &self.customer,
+                &self.personality,
+                rate,
+                months,
+                self.game_length_in_months,
+                awards,
+            );
             Ok(-score)
         }
     }
@@ -73,131 +131,179 @@ pub fn blackbox_locally_optimized_submission(
             ));
 
             let personality = &indata.personalities[&customer.personality];
+            let award_available = {
+                let entry = indata.awards.first_key_value().unwrap();
+                let mut ret = [(*entry.0, *entry.1, 0.0); 6];
+                for (&n, &a) in indata.awards.iter() {
+                    let d = match n {
+                        "NoInterestRate" => 1.0,
+                        "HalfInterestRate" => 0.5,
+                        _ => 0.0,
+                    };
+                    ret[a.id.get() as usize - 1] = (n, a, d);
+                }
+                ret
+            };
             let opt = BlackboxOpt {
                 customer: customer.clone(),
                 personality: personality.clone(),
                 game_length_in_months: indata.map.game_length_in_months,
-                // TODO: BlackboxOpt assuming no awards
-                awards: vec![None; indata.map.game_length_in_months],
+                award_available: award_available.clone(),
+                id_to_awards_ttl: dashmap::DashMap::new(),
             };
-            let solver = argmin::solver::particleswarm::ParticleSwarm::<Vec<f64>, f64, _>::new(
+            let award_available = opt.award_available.clone();
+            let solver = argmin::solver::particleswarm::ParticleSwarm::<Param, f64, _>::new(
                 (
-                    vec![0.0, 0.0],
-                    vec![1.0, indata.map.game_length_in_months as f64],
+                    Param(vec![0.0, 0.0], 0),
+                    Param(
+                        vec![1.0, indata.map.game_length_in_months as f64],
+                        usize::MAX,
+                    ),
                 ),
-                if HEAVY { 100 } else { 10 },
+                NUM_PARTICLES,
             );
             let res = argmin::core::Executor::new(opt, solver)
                 .add_observer(
                     argmin_observer_slog::SlogLogger::term(),
                     argmin::core::observers::ObserverMode::NewBest,
                 )
-                .configure(|state| state.max_iters(if HEAVY { 20_000 } else { 10_000 }))
+                .configure(|state| state.max_iters(MAX_ITERS))
                 .run()
                 .unwrap();
             //dbg!(res.problem());
             //dbg!(&res.state().best_individual);
             let (rate, months) = param_to_rate_months(
-                &res.state().best_individual.as_ref().unwrap().position,
+                &res.state().best_individual.as_ref().unwrap().position.0,
                 &personality.clone(),
             );
-
-            let best_award = {
-                let mk_score = |(an, a): (&'static str, Award)| -> f64 {
-                    let interest_cost = match an {
-                        "NoInterestRate" => 1.0,
-                        "HalfInterestRate" => 0.5,
-                        _ => 0.0,
-                    } * customer.loan.amount
-                        * rate
-                        / 12.0;
-                    a.base_happiness * personality.happiness_multiplier - a.cost - interest_cost
-                };
-                let best_award = indata
-                    .awards
-                    .iter()
-                    .map(|(n, a)| (*n, *a))
-                    .max_by(|a1, a2| {
-                        let score1 = mk_score(*a1);
-                        let score2 = mk_score(*a2);
-                        PartialOrd::partial_cmp(&score1, &score2).unwrap()
-                    })
-                    .unwrap();
-                if mk_score(best_award) <= 0.0 {
-                    None
-                } else {
-                    Some(best_award)
-                }
-            };
-
-            (0..((indata.map.game_length_in_months + 1) / 2 + 4)
-                .min(indata.map.game_length_in_months))
-                .map(|num_awards| {
-                    let mut awards: Vec<Option<&str>> =
-                        vec![None; indata.map.game_length_in_months];
-                    let mut sim_awards: Vec<Option<(Award, f64)>> =
-                        vec![None; indata.map.game_length_in_months];
-
-                    let best_award_name = best_award.map(|a| a.0);
-                    let best_award_sim = best_award.map(|a| {
-                        (
-                            a.1,
-                            match a.0 {
-                                "NoInterestRate" => 1.0,
-                                "HalfInterestRate" => 0.5,
-                                _ => 0.0,
-                            },
-                        )
-                    });
-
-                    let cutoff = (indata.map.game_length_in_months + 1) / 2;
-                    for i in 0..num_awards.min(cutoff) {
-                        awards[sim_awards.len() - 1 - 2 * i] = best_award_name;
-                        sim_awards[awards.len() - 1 - 2 * i] = best_award_sim;
-                    }
-                    for i in 0..num_awards.saturating_sub(cutoff) {
-                        awards[sim_awards.len() - 2 - 2 * i] = best_award_name;
-                        sim_awards[awards.len() - 2 - 2 * i] = best_award_sim;
-                    }
-                    let (score, budget_required, bankruptcy_at) =
-                        crate::whitebox::simulate_simplified_kernel(
-                            &customer,
-                            personality,
-                            rate,
-                            months,
-                            indata.map.game_length_in_months,
-                            &sim_awards,
-                        );
-                    let bankruptcy_at = if bankruptcy_at == -1 {
-                        String::new()
-                    } else {
-                        format!("bankrupt_at={}", bankruptcy_at)
-                    };
-                    tracing::info!(
-                        customer.name,
-                        rate,
-                        months,
-                        best_award_name,
-                        score,
-                        budget_required,
-                        "{}",
-                        bankruptcy_at,
-                    );
+            if USE_VERY_SLOW_BUT_GOOD_DP {
+                crate::whitebox::simulate_kernel_dp_optimal_awards(
+                    &customer,
+                    &personality,
+                    rate,
+                    months,
+                    indata.map.game_length_in_months,
+                    &award_available,
+                )
+                .into_iter()
+                .map(|(score, cost, awards)| {
+                    tracing::info!(customer.name, rate, months, ?awards, score, cost);
+                    // TODO: Cost rounding could be incorrect
                     (
                         (
                             customer.name,
                             CustomerSubmission {
                                 months_to_pay_back_loan: months,
                                 yearly_interest_rate: rate,
-                                awards: awards.into(),
+                                awards: awards
+                                    .into_iter()
+                                    .map(|a| a.map(|aa| award_available[(aa.get() as usize) - 1].0))
+                                    .collect(),
                             },
                         ),
                         score,
-                        round_pre_knapsack(budget_required),
+                        cost.round() as usize,
                     )
                 })
-                .filter(|(_, score, _)| *score > 0.0)
-                .collect::<Vec<(_, f64, usize)>>()
+                .collect()
+            } else {
+                let best_award = {
+                    let mk_score = |(an, a): (&'static str, Award)| -> f64 {
+                        let interest_cost = match an {
+                            "NoInterestRate" => 1.0,
+                            "HalfInterestRate" => 0.5,
+                            _ => 0.0,
+                        } * customer.loan.amount
+                            * rate
+                            / 12.0;
+                        a.base_happiness * personality.happiness_multiplier - a.cost - interest_cost
+                    };
+                    let best_award = indata
+                        .awards
+                        .iter()
+                        .map(|(n, a)| (*n, *a))
+                        .max_by(|a1, a2| {
+                            let score1 = mk_score(*a1);
+                            let score2 = mk_score(*a2);
+                            PartialOrd::partial_cmp(&score1, &score2).unwrap()
+                        })
+                        .unwrap();
+                    if mk_score(best_award) <= 0.0 {
+                        None
+                    } else {
+                        Some(best_award)
+                    }
+                };
+
+                (0..((indata.map.game_length_in_months + 1) / 2 + 4)
+                    .min(indata.map.game_length_in_months))
+                    .map(|num_awards| {
+                        let mut awards: Vec<Option<&str>> =
+                            vec![None; indata.map.game_length_in_months];
+                        let mut sim_awards: Vec<Option<(Award, f64)>> =
+                            vec![None; indata.map.game_length_in_months];
+
+                        let best_award_name = best_award.map(|a| a.0);
+                        let best_award_sim = best_award.map(|a| {
+                            (
+                                a.1,
+                                match a.0 {
+                                    "NoInterestRate" => 1.0,
+                                    "HalfInterestRate" => 0.5,
+                                    _ => 0.0,
+                                },
+                            )
+                        });
+
+                        let cutoff = (indata.map.game_length_in_months + 1) / 2;
+                        for i in 0..num_awards.min(cutoff) {
+                            awards[sim_awards.len() - 1 - 2 * i] = best_award_name;
+                            sim_awards[awards.len() - 1 - 2 * i] = best_award_sim;
+                        }
+                        for i in 0..num_awards.saturating_sub(cutoff) {
+                            awards[sim_awards.len() - 2 - 2 * i] = best_award_name;
+                            sim_awards[awards.len() - 2 - 2 * i] = best_award_sim;
+                        }
+                        let (score, budget_required, bankruptcy_at) =
+                            crate::whitebox::simulate_simplified_kernel(
+                                &customer,
+                                personality,
+                                rate,
+                                months,
+                                indata.map.game_length_in_months,
+                                &sim_awards,
+                            );
+                        let bankruptcy_at = if bankruptcy_at == -1 {
+                            String::new()
+                        } else {
+                            format!("bankrupt_at={}", bankruptcy_at)
+                        };
+                        tracing::info!(
+                            customer.name,
+                            rate,
+                            months,
+                            best_award_name,
+                            score,
+                            budget_required,
+                            "{}",
+                            bankruptcy_at,
+                        );
+                        (
+                            (
+                                customer.name,
+                                CustomerSubmission {
+                                    months_to_pay_back_loan: months,
+                                    yearly_interest_rate: rate,
+                                    awards: awards.into(),
+                                },
+                            ),
+                            score,
+                            round_pre_knapsack(budget_required),
+                        )
+                    })
+                    .filter(|(_, score, _)| *score > 0.0)
+                    .collect::<Vec<(_, f64, usize)>>()
+            }
         })
         .collect();
 

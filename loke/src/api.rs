@@ -29,14 +29,18 @@ impl InputData {
             fs::read_to_string(format!("data/Personalities-{map_name}.json"))
                 .unwrap()
                 .leak();
+        let mut awards: Vec<(_, _)> = serde_json::from_str::<model::Awards>(awards)
+            .unwrap()
+            .awards
+            .into_iter()
+            .collect();
+        awards.sort_by(|(_, a), (_, b)| f64::total_cmp(&a.base_happiness, &b.base_happiness));
         Self {
-            awards: serde_json::from_str::<model::Awards>(awards)
-                .unwrap()
-                .awards
+            awards: awards
                 .into_iter()
                 .enumerate()
                 .map(|(i, (k, mut v))| {
-                    v.id = i;
+                    v.id = std::num::NonZeroU8::new(i as u8 + 1).unwrap();
                     (&*k.leak(), v)
                 })
                 .collect(),
